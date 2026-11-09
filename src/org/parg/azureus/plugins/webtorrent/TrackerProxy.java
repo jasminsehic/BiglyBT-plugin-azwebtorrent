@@ -550,7 +550,18 @@ TrackerProxy
 				
 				if ( reply == null ){
 					
-					throw( new Exception( "Timeout" ));
+					// A timed-out response must not leave an apparently open but unusable socket cached.
+					boolean remove;
+					synchronized( client_sessions ){
+						remove = client_sessions.get( ws_url ) == client_session;
+						if ( remove ){
+							client_sessions.remove( ws_url );
+						}
+					}
+					if ( remove ){
+						client_session.close();
+					}
+					throw( new IOException( "Tracker announce timed out" ));
 				}
 				
 				byte[] reply_bytes;
@@ -783,9 +794,12 @@ TrackerProxy
     			sem = ad.announce_sem;
     		}
     		
-    		sem.reserve( timeout );
-    		
-    		return( ad.last_announce );
+    		if ( !sem.reserve( timeout )){
+    			return( null );
+    		}
+    		synchronized( this ){
+    			return( ad.last_announce );
+    		}
     	}
     	
     	private void
