@@ -530,6 +530,7 @@ WebTorrentTracker
 	public void
 	destroy()
 	{
+		timer.cancel();
 		if ( server != null ){
 			
 			server.destroy();
@@ -541,9 +542,7 @@ WebTorrentTracker
 			
 			destroyed	= true;
 			
-			to_destroy = session_map.values();
-			
-			session_map.clear();
+			to_destroy = detachSessions(session_map);
 		}
 		
 		for ( SessionWrapper sw: to_destroy ){
@@ -552,6 +551,12 @@ WebTorrentTracker
 		}
 	}
 	
+	static <T> List<T> detachSessions(Map<?, T> sessions) {
+		List<T> snapshot = new ArrayList<>(sessions.values());
+		sessions.clear();
+		return snapshot;
+	}
+
 	private class
 	SessionWrapper
 	{
