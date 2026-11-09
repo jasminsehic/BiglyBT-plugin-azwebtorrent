@@ -69,6 +69,7 @@ TrackerProxy
 	private final Listener				listener;
 	
 	private Map<String,ClientSession>	client_sessions = new HashMap<String, ClientSession>();
+	private final TrackerConnectionGate connection_gate = new TrackerConnectionGate();
 
 	private ByteArrayHashMap<byte[]>	hash_to_peer_id_map 		= new ByteArrayHashMap<>();
 	private ByteArrayHashMap<byte[]>	hash_to_scrape_peer_id_map 	= new ByteArrayHashMap<>();
@@ -304,7 +305,17 @@ TrackerProxy
 					client_session.send( announce );
 					
 				}else{
-					
+					// Only one handshake per tracker URL; requests for unrelated trackers proceed independently.
+					synchronized (connection_gate.lockFor(ws_url)) {
+						synchronized (client_sessions) {
+							ClientSession other = client_sessions.get(ws_url);
+							if (other != null && other.isOpen()) {
+								client_session = other;
+						}
+						}
+						if (client_session != null) {
+							client_session.send(announce);
+						} else {
 		            ClientManager client = ClientManager.createClient();
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
@@ -410,7 +421,14 @@ TrackerProxy
 																		trace( answer_str );
 																		
 																		try{
-																			session.getBasicRemote().sendText( answer_str );
+																			ClientSession target;
+												synchronized (client_sessions) {
+													target = client_sessions.get(ws_url);
+												}
+												if (target == null || target.getSession() != session) {
+													throw new IOException("WebSocket session replaced");
+												}
+												target.send(answer_str);
 																			
 																			trace( "    answer sent" );
 																			
@@ -490,9 +508,10 @@ TrackerProxy
 				                      		
 				                        trace( "announce: new connection to " + ws_url + announce );
 				                        
-				                        session.getBasicRemote().sendText( announce );
+				                        // Send after storing the session in client_sessions so fast replies
+				                        // cannot be discarded while the new socket is still unregistered.
 				                        
-				                    }catch( IOException e ){
+				                    }catch( Exception e ){
 				                    	
 				                    	 synchronized( client_sessions ){
 				                    		 
@@ -544,7 +563,10 @@ TrackerProxy
 		            		}
 		            	}
 		            }
-				}   
+							client_session.send(announce);
+						}
+					}
+				}
 				
 				Map reply = client_session.waitForAnnounce( info_hash, read_timeout - 5*1000 );
 				
@@ -692,6 +714,7 @@ TrackerProxy
     ClientSession
     {
     	private Session		session;
+    	private TrackerSocketWriter writer;
     	
     	private ByteArrayHashMap<AnnounceData>	announce_map = new ByteArrayHashMap<>();
     	    	
@@ -700,6 +723,7 @@ TrackerProxy
     		Session		_session )
     	{
     		session	= _session;
+    		writer = new TrackerSocketWriter(_session, 30_000);
     	}
     	
     	private void
@@ -708,7 +732,7 @@ TrackerProxy
     		
     		throws Exception
     	{
-    		session.getBasicRemote().sendText( str );
+    		writer.send(str);
     	}
     	
     	private Session
