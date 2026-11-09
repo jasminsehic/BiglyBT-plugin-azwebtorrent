@@ -15,3 +15,7 @@ mvn clean verify
 Output: `target/azwebtorrent.jar`. The shaded JAR contains plugin classes/resources and runtime dependencies, excluding the BiglyBT host API. GitHub Actions uploads the resulting JAR on successful builds.
 
 No native WebRTC runtime is invoked by the unit tests; they should use local WebSocket test servers and mocked/test-only peers. The WebRTC native library is needed when actually using the plugin in BiglyBT.
+
+## WebRTC API compatibility
+
+The plugin calls `RTCStats.getMembers()`, present in `webrtc-java` 0.10.0 and removed by 0.11.0 (renamed to `getAttributes()`). The build pins 0.10.0 to retain the original implementation and avoid runtime API linkage mismatches. Check that the installed plugin's WebRTC native runtime/JAR version agrees before deployment; CI verifies Java compilation only, not the running BiglyBT process.
