@@ -720,7 +720,7 @@ WebRTCLocalImpl
 													
 													RTCStats	info 		= entry.getValue();
 													
-													Map<String,Object> members = info.getMembers();
+													Map<String,Object> members = info.getAttributes();
 													
 													if ( 	members.containsKey( "isRemote" ) && 
 															members.containsKey( "candidateType" ) &&
