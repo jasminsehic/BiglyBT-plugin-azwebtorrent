@@ -13,6 +13,12 @@ $toolInfo | ForEach-Object { Write-Host $_ }
 if (($toolInfo -join ' ') -notmatch 'Java version:\s*1\.8\.') {
     throw 'Maven must run with a Java 8 JDK. Set JAVA_HOME to the installed Java 8 JDK first.'
 }
+if (-not $env:JAVA_HOME) { throw 'JAVA_HOME must point to the Java 8 JDK.' }
+$javaExecutable = Join-Path $env:JAVA_HOME 'bin\\java.exe'
+if (-not (Test-Path $javaExecutable)) {
+    throw 'JAVA_HOME does not contain a working Java runtime.'
+}
+Write-Host "Using Java from $javaExecutable"
 Write-Host '--- Fetch BiglyBT 4.1.0.0 host API (only for compilation) ---'
 $hostJar = Join-Path $env:TEMP 'BiglyBT-4.1.0.0-host.jar'
 if (-not (Test-Path $hostJar)) {
@@ -40,7 +46,7 @@ Write-Host '--- Standalone Java 8 direct-only TLS/WebSocket probe ---'
 Write-Host 'This separate Java process bypasses outbound proxies without changing BiglyBT settings.'
 foreach ($uri in @('wss://tracker.openwebtorrent.com', 'wss://tracker.webtorrent.dev')) {
     Write-Host "=== $uri ==="
-    & java -cp $classPath org.parg.azureus.plugins.webtorrent.DirectWssProbe $uri
+    & $javaExecutable -cp $classPath org.parg.azureus.plugins.webtorrent.DirectWssProbe $uri
     if ($LASTEXITCODE -ne 0) { throw "Direct WSS probe failed for $uri" }
 }
 Write-Host "Build complete: $jar"
