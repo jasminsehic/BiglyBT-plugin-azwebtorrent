@@ -417,11 +417,18 @@ TrackerProxy
 		            
 		            ClientEndpointConfig cec = ClientEndpointConfig.Builder.create().build();
 		            
-                    // Experimental A/B comparison against the original, blocking
-                    // connection path. Do not merge until tested on Java 8.
-                    Session session;
-                    try {
-                        session = client.connectToServer(
+                    // Experimental A/B comparison against the original blocking
+                    // Tyrus API. Run it in a bounded daemon worker so a failed TLS
+                    // handshake cannot freeze an entire tracker request.
+                    TrackerHandshake handshake = new TrackerHandshake();
+                    java.util.concurrent.ExecutorService connectWorker =
+                        Executors.newSingleThreadExecutor(task -> {
+                            Thread thread = new Thread(task, "azwebtorrent-wss-sync-probe");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+                    java.util.concurrent.Future<Session> connecting =
+                        connectWorker.submit(() -> client.connectToServer(
 		            		new Endpoint() 
 		            		{
 				                @Override
@@ -430,6 +437,7 @@ TrackerProxy
 				                	final Session 		session, 
 				                	EndpointConfig 		config) 
 				                {
+                                    if (!handshake.onOpen(session)) return;
                                     try{
 				                    	
 				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
@@ -680,12 +688,15 @@ TrackerProxy
 				                		 }
 				                	 }
 				                }
-                            }, cec, new URI( ws_url ));
+                            }, cec, new URI( ws_url )));
+                    Session session;
+                    try {
+                        session = handshake.await(connecting, handshakeTimeout);
                         diagnostic("handshake-complete", ws_url,
                             "elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(
                                 System.nanoTime() - handshakeStarted)
                                 + " mode=sync");
-                    } catch (Exception e) {
+                    } catch (IOException e) {
                         Throwable cause = e.getCause();
                         diagnostic("handshake-error", ws_url,
                             "timeoutMs=" + handshakeTimeout
@@ -695,6 +706,8 @@ TrackerProxy
                                     ? e.getClass().getSimpleName()
                                     : cause.getClass().getSimpleName()));
                         throw e;
+                    } finally {
+                        connectWorker.shutdownNow();
                     }
 
 		            client_session = new ClientSession( session, ws_url );
