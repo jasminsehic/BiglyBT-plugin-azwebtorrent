@@ -388,12 +388,15 @@ TrackerProxy
 		            	} else {
 		            diagnostic("connect-start", ws_url, "serialized=true");
                     ClientManager client = ClientManager.createClient();
-                    // Bound TLS and HTTP upgrade negotiation as well as the announce wait.
-                    // The read timeout remains the overall caller budget.
-                    int handshakeTimeout = (int) Math.min(10_000L,
-                        Math.max(1_000L, read_timeout - 5_000L));
+                    // The previous 10-second cap prematurely rejected slow WSS
+                    // handshakes; reserve five seconds of the caller's read budget
+                    // for the announce, and let Tyrus fail slightly before our
+                    // Future timeout so its underlying error can be reported.
+                    int handshakeTimeout = TrackerHandshake.timeoutForRead(read_timeout);
+                    int tyrusTimeout = Math.max(500, handshakeTimeout - 1_000);
                     client.getProperties().put(ClientProperties.HANDSHAKE_TIMEOUT,
-                        handshakeTimeout);
+                        tyrusTimeout);
+                    long handshakeStarted = System.nanoTime();
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
 		            	
@@ -676,10 +679,19 @@ TrackerProxy
                     Session session;
                     try {
                         session = handshake.await(connecting, handshakeTimeout);
+                        diagnostic("handshake-complete", ws_url,
+                            "elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(
+                                System.nanoTime() - handshakeStarted));
                     } catch (IOException e) {
+                        Throwable cause = e.getCause();
                         diagnostic(e.getMessage().contains("timed out")
                                 ? "handshake-timeout" : "handshake-error",
-                            ws_url, "timeoutMs=" + handshakeTimeout);
+                            ws_url, "timeoutMs=" + handshakeTimeout
+                                + " elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(
+                                    System.nanoTime() - handshakeStarted)
+                                + " cause=" + (cause == null
+                                    ? e.getClass().getSimpleName()
+                                    : cause.getClass().getSimpleName()));
                         throw e;
                     }
 
