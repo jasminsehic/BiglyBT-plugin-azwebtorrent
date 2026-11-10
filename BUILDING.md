@@ -19,3 +19,7 @@ No native WebRTC runtime is invoked by the unit tests; they should use local Web
 ## WebRTC API compatibility
 
 The plugin calls `RTCStats.getMembers()`, present in `webrtc-java` 0.10.0 and removed by 0.11.0 (renamed to `getAttributes()`). The build pins 0.10.0 to retain the original implementation and avoid runtime API linkage mismatches. Check that the installed plugin's WebRTC native runtime/JAR version agrees before deployment; CI verifies Java compilation only, not the running BiglyBT process.
+
+## Cross-platform CI
+
+GitHub Actions runs `mvn clean verify` on Ubuntu and Windows, checks the shaded JAR contains `plugin.properties` and the tracker proxy class, and checks that the Windows JAR contains `webrtc-java.dll`. The BiglyBT host API is downloaded from the supported 4.1.0.0 release and is not bundled in the plugin. Each platform uploads its installable JAR as a build artifact.
