@@ -69,6 +69,7 @@ WebTorrentTracker
 	private final TimerEventPeriodic	timer;
 	
 	private boolean		destroyed;
+    private final java.util.concurrent.atomic.AtomicLong sessionEvents = new java.util.concurrent.atomic.AtomicLong();
 	
 	protected
 	WebTorrentTracker(
@@ -213,7 +214,13 @@ WebTorrentTracker
 			}
 		}
 		
-		if ( close_it ){
+		long events = sessionEvents.incrementAndGet();
+        if (events <= 3 || events % 100 == 0) {
+            TrackerDiagnostics.report(plugin, "hosted-tracker",
+                close_it ? "session-rejected-during-shutdown" : "session-registered",
+                uri == null ? null : uri.toString(), "eventCount=" + events);
+        }
+        if ( close_it ){
 			
 			try{
 				plugin.closeSession( server, session );
@@ -240,6 +247,13 @@ WebTorrentTracker
 			
 			wrapper.destroy();
 		}
+        if (wrapper != null) {
+            long events = sessionEvents.incrementAndGet();
+            if (events <= 3 || events % 100 == 0) {
+                TrackerDiagnostics.report(plugin, "hosted-tracker", "session-removed", null,
+                    "eventCount=" + events);
+            }
+        }
 	}
 	
 	private SessionTorrent
@@ -527,9 +541,15 @@ WebTorrentTracker
 		}
 	}
 	
-	public void
-	destroy()
-	{
+	public void destroy() {
+        int sessions, torrents;
+        synchronized (lock) {
+            sessions = session_map.size();
+            torrents = active_torrents.size();
+        }
+        TrackerDiagnostics.report(plugin, "hosted-tracker", "shutdown-start", null,
+            "sessions=" + sessions + " torrents=" + torrents);
+        timer.cancel();
 		if ( server != null ){
 			
 			server.destroy();
@@ -541,17 +561,22 @@ WebTorrentTracker
 			
 			destroyed	= true;
 			
-			to_destroy = session_map.values();
-			
-			session_map.clear();
+			to_destroy = detachSessions(session_map);
 		}
 		
 		for ( SessionWrapper sw: to_destroy ){
-			
-			sw.destroy();
-		}
+            sw.destroy();
+        }
+        TrackerDiagnostics.report(plugin, "hosted-tracker", "shutdown-complete", null,
+            "sessionsDetached=" + to_destroy.size());
 	}
 	
+	static <T> List<T> detachSessions(Map<?, T> sessions) {
+		List<T> snapshot = new ArrayList<>(sessions.values());
+		sessions.clear();
+		return snapshot;
+	}
+
 	private class
 	SessionWrapper
 	{

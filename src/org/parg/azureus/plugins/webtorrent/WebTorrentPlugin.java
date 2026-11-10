@@ -183,6 +183,12 @@ WebTorrentPlugin
 		loc_utils = plugin_interface.getUtilities().getLocaleUtilities();
 		
 		log	= plugin_interface.getLogger().getTimeStampedChannel( "WebTorrent");
+        // Persist a rotating file even in release builds where plugin diagnostics
+        // would otherwise only appear in the UI logging channel.
+        log.setDiagnostic(16L * 1024 * 1024, true);
+        log.setForce(true);
+        log.log("[soak][plugin] diagnostic-file-enabled maxFileBytes=16777216");
+
 		
 		final UIManager	ui_manager = plugin_interface.getUIManager();
 

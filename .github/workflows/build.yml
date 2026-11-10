@@ -5,12 +5,17 @@ on:
     branches:
       - 'build/**'
       - 'fix/**'
+      - 'integration/**'
   pull_request:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -19,22 +24,33 @@ jobs:
           java-version: '21'
           cache: maven
       - name: Download supported BiglyBT host runtime
+        shell: bash
         run: |
           curl --fail --location --retry 3 \
             "https://github.com/BiglySoftware/BiglyBT/releases/download/v4.1.0.0/GitHub_BiglyBT.jar" \
-            --output /tmp/BiglyBT.jar
-          test -s /tmp/BiglyBT.jar
+            --output "$RUNNER_TEMP/BiglyBT.jar"
+          test -s "$RUNNER_TEMP/BiglyBT.jar"
       - name: Install host API into Maven cache
+        shell: bash
         run: |
           mvn --batch-mode --no-transfer-progress install:install-file \
-            -Dfile=/tmp/BiglyBT.jar \
+            -Dfile="$RUNNER_TEMP/BiglyBT.jar" \
             -DgroupId=com.biglybt -DartifactId=biglybt-host \
             -Dversion=4.1.0.0 -Dpackaging=jar -DgeneratePom=true
       - name: Compile, test, and package plugin
         run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Verify plugin JAR entries
+        shell: bash
+        run: |
+          jar tf target/azwebtorrent.jar | grep -Fx 'plugin.properties'
+          jar tf target/azwebtorrent.jar | grep -Fx 'org/parg/azureus/plugins/webtorrent/TrackerProxy.class'
+      - name: Verify Windows WebRTC native library is packaged
+        if: runner.os == 'Windows'
+        shell: bash
+        run: jar tf target/azwebtorrent.jar | grep -Fx 'webrtc-java.dll'
       - name: Upload installable plugin JAR
         uses: actions/upload-artifact@v4
         with:
-          name: azwebtorrent-jar
+          name: azwebtorrent-jar-${{ matrix.os }}
           path: target/azwebtorrent.jar
           if-no-files-found: error
