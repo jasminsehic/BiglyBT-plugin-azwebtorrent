@@ -4,7 +4,7 @@ The plugin has its original Java sources under `src/org`. A Maven build is provi
 
 ## Build
 
-Install Java 21 and Maven 3.9+, then download the BiglyBT 4.1.0.0 host runtime:
+Install Java 8 and Maven 3.9+, then download the BiglyBT 4.1.0.0 host runtime:
 
 ```sh
 curl -fL https://github.com/BiglySoftware/BiglyBT/releases/download/v4.1.0.0/GitHub_BiglyBT.jar -o /tmp/BiglyBT.jar
@@ -13,6 +13,8 @@ mvn clean verify
 ```
 
 Output: `target/azwebtorrent.jar`. The shaded JAR contains plugin classes/resources and runtime dependencies, excluding the BiglyBT host API. GitHub Actions uploads the resulting JAR on successful builds.
+
+The plugin targets Java 8 bytecode (class-file major version 52). CI builds and executes tests with Java 8 on Linux and Windows and checks the shaded installable JAR for incompatible Java 9+ class files. WebSocket uses Tyrus 1.21 (javax.websocket, Grizzly 2.x). Java 21 is not required for the runtime.
 
 No native WebRTC runtime is invoked by the unit tests; they should use local WebSocket test servers and mocked/test-only peers. The WebRTC native library is needed when actually using the plugin in BiglyBT.
 
