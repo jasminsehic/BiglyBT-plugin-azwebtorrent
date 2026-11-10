@@ -35,6 +35,7 @@ import java.util.Map;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import jakarta.websocket.ClientEndpointConfig;
+import jakarta.websocket.CloseReason;
 import jakarta.websocket.Endpoint;
 import jakarta.websocket.EndpointConfig;
 import jakarta.websocket.MessageHandler;
@@ -344,6 +345,20 @@ TrackerProxy
 				                            	trace("Received message from " + ws_url + ", offers=" + (offers==null?null:offers.size()) + ": " + message);
 	
 				                            	Map map = JSONUtils.decodeJSON( message );
+				                            	if (map != null && map.containsKey("failure reason")) {
+				                            		synchronized (client_sessions) {
+				                            			ClientSession current = client_sessions.get(ws_url);
+				                            			if (current != null && current.getSession() == session) {
+				                            				Object hashValue = map.get("info_hash");
+				                            				if (hashValue instanceof String) {
+				                            					current.announceReceived(
+				                            						((String) hashValue).getBytes(java.nio.charset.StandardCharsets.ISO_8859_1), map);
+				                            				} else {
+				                            					current.announceFailed(map);
+				                            				}
+				                            			}
+				                            		}
+				                            	}
 				                            			                            	
 				                            	if ( map.containsKey( "answer" )){
 				                            	
@@ -442,7 +457,7 @@ TrackerProxy
 							                    		 
 							                    		 ClientSession s = client_sessions.get( ws_url );
 								                		 
-								                		 if ( s.getSession() == session ){
+								                		 if ( s != null && s.getSession() == session ){
 								                			 
 								                			 try{
 							                            		String hash_str = (String)map.get( "info_hash" );
@@ -467,7 +482,7 @@ TrackerProxy
 							                    		 
 							                    		 ClientSession s = client_sessions.get( ws_url );
 								                		 
-								                		 if ( s.getSession() == session ){
+								                		 if ( s != null && s.getSession() == session ){
 
 								                			 for ( String info_hash: files.keySet()){
 
@@ -498,7 +513,7 @@ TrackerProxy
 				                    		 
 				                    		 ClientSession s = client_sessions.get( ws_url );
 					                		 
-					                		 if ( s.getSession() == session ){
+					                		 if ( s != null && s.getSession() == session ){
 					                			 
 					                			 s.close();
 					                			 
@@ -509,6 +524,17 @@ TrackerProxy
 				                }
 				                
 				                @Override
+				                public void onClose(Session session, CloseReason reason) {
+				                    synchronized (client_sessions) {
+				                        ClientSession current = client_sessions.get(ws_url);
+				                        if (current != null && current.getSession() == session) {
+				                            client_sessions.remove(ws_url);
+				                            current.close();
+				                        }
+				                    }
+				                }
+
+				                @Override
 				                public void 
 				                onError(
 				                	Session 	session, 
@@ -518,7 +544,7 @@ TrackerProxy
 				                		 
 				                		 ClientSession s = client_sessions.get( ws_url );
 				                		 
-				                		 if ( s.getSession() == session ){
+				                		 if ( s != null && s.getSession() == session ){
 				                			 
 				                			 s.close();
 				                			 
@@ -549,8 +575,10 @@ TrackerProxy
 				Map reply = client_session.waitForAnnounce( info_hash, read_timeout - 5*1000 );
 				
 				if ( reply == null ){
-					
 					throw( new Exception( "Timeout" ));
+				}
+				if ( reply.containsKey("failure reason") ){
+					throw new IOException("Tracker rejected announce: " + reply.get("failure reason"));
 				}
 				
 				byte[] reply_bytes;
@@ -692,6 +720,7 @@ TrackerProxy
     ClientSession
     {
     	private Session		session;
+    	private boolean terminated;
     	
     	private ByteArrayHashMap<AnnounceData>	announce_map = new ByteArrayHashMap<>();
     	    	
@@ -723,6 +752,19 @@ TrackerProxy
     		return( session.isOpen());
     	}
     	
+    	private void announceFailed(Map failure) {
+    		synchronized( this ){
+    			for ( AnnounceData ad: announce_map.values() ){
+    				ad.last_announce = failure;
+    				ad.last_announce_time = SystemTime.getMonotonousTime();
+    				if ( ad.announce_sem != null ){
+    					ad.announce_sem.releaseForever();
+    					ad.announce_sem = null;
+    				}
+    			}
+    		}
+    	}
+
     	private void
     	announceReceived(
     		byte[]		hash,
@@ -760,7 +802,7 @@ TrackerProxy
     		AESemaphore 	sem;
     		
     		synchronized( this ){
-    			
+    			if ( terminated ) return null;
     			ad = announce_map.get( hash );
     			
     			if ( ad == null ){
@@ -784,13 +826,24 @@ TrackerProxy
     		}
     		
     		sem.reserve( timeout );
-    		
-    		return( ad.last_announce );
+    		synchronized( this ){
+    			return( terminated ? null : ad.last_announce );
+    		}
     	}
     	
     	private void
     	close()
     	{
+    		synchronized( this ){
+    			terminated = true;
+    			for ( AnnounceData ad: announce_map.values() ){
+    				ad.last_announce = null;
+    				if ( ad.announce_sem != null ){
+    					ad.announce_sem.releaseForever();
+    					ad.announce_sem = null;
+    				}
+    			}
+    		}
     		try{
     			session.close();
     			
