@@ -5,6 +5,7 @@ on:
     branches:
       - 'build/**'
       - 'fix/**'
+      - 'integration/**'
   pull_request:
   workflow_dispatch:
 

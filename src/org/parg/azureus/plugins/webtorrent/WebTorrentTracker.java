@@ -527,10 +527,15 @@ WebTorrentTracker
 		}
 	}
 	
-	public void
-	destroy()
-	{
-		timer.cancel();
+	public void destroy() {
+        int sessions, torrents;
+        synchronized (lock) {
+            sessions = session_map.size();
+            torrents = active_torrents.size();
+        }
+        TrackerDiagnostics.report(plugin, "hosted-tracker", "shutdown-start", null,
+            "sessions=" + sessions + " torrents=" + torrents);
+        timer.cancel();
 		if ( server != null ){
 			
 			server.destroy();
@@ -546,9 +551,10 @@ WebTorrentTracker
 		}
 		
 		for ( SessionWrapper sw: to_destroy ){
-			
-			sw.destroy();
-		}
+            sw.destroy();
+        }
+        TrackerDiagnostics.report(plugin, "hosted-tracker", "shutdown-complete", null,
+            "sessionsDetached=" + to_destroy.size());
 	}
 	
 	static <T> List<T> detachSessions(Map<?, T> sessions) {

@@ -71,6 +71,11 @@ TrackerProxy
 	implements LocalWebServer.Listener
 {
 	private static final boolean TRACE = false;
+    private final java.util.concurrent.atomic.AtomicLong offerBatches = new java.util.concurrent.atomic.AtomicLong();
+
+    private void diagnostic(String event, String trackerUrl, String detail) {
+        TrackerDiagnostics.report(plugin, "proxy", event, trackerUrl, detail);
+    }
 	
 	private final WebTorrentPlugin		plugin;
 	private final Listener				listener;
@@ -260,7 +265,14 @@ TrackerProxy
 						
 						long	elapsed = SystemTime.getMonotonousTime() - start;
 						
-						//System.out.println( "Offer generation took " + elapsed );
+						if (offers_to_generate > 0) {
+                            long batches = offerBatches.incrementAndGet();
+                            if (batches <= 3 || batches % 100 == 0) {
+                                diagnostic("offers-generated", ws_url,
+                                    "requested=" + offers_to_generate + " ready=" + offers.size()
+                                    + " batches=" + batches + " elapsedMs=" + elapsed);
+                            }
+                        }
 					}
 				}
 			}
@@ -315,8 +327,8 @@ TrackerProxy
 					if ( client_session != null && !client_session.isOpen()){
 						
 						client_sessions.remove( ws_url );
-						
-						client_session = null;
+                        diagnostic("stale-socket-evicted", ws_url, "closed=true");
+                        client_session = null;
 					}
 				}
 			
@@ -337,9 +349,11 @@ TrackerProxy
 		            		}
 		            	}
 		            	if (client_session != null) {
-		            		client_session.send(announce);
+                        diagnostic("connection-reused-after-gate", ws_url, "duplicateHandshakeAvoided=true");
+                        client_session.send(announce);
 		            	} else {
-		            ClientManager client = ClientManager.createClient();
+		            diagnostic("connect-start", ws_url, "serialized=true");
+                    ClientManager client = ClientManager.createClient();
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
 		            	
@@ -556,7 +570,8 @@ TrackerProxy
 				                      		
 				                        trace( "announce: new connection to " + ws_url + announce );
 				                        
-				                        // Initial announce is sent after this session is registered below.
+				                        diagnostic("socket-open", ws_url, "handlersReady=true");
+                                        // Initial announce is sent after this session is registered below.
 				                        
 				                    }catch( Exception e ){
 				                    	
@@ -576,7 +591,9 @@ TrackerProxy
 				                
 				                @Override
 				                public void onClose(Session session, CloseReason reason) {
-				                    synchronized (client_sessions) {
+                                    diagnostic("socket-closed", ws_url,
+                                        "code=" + (reason == null ? "unknown" : reason.getCloseCode().getCode()));
+                                    synchronized (client_sessions) {
 				                        ClientSession current = client_sessions.get(ws_url);
 				                        if (current != null && current.getSession() == session) {
 				                            client_sessions.remove(ws_url);
@@ -607,9 +624,9 @@ TrackerProxy
 	            
 		            client_session = new ClientSession( session, ws_url );
 		            
-		            synchronized( client_sessions ){
-		            	
-		            	ClientSession existing = client_sessions.put( ws_url, client_session );
+		            ClientSession existing;
+                    synchronized( client_sessions ){
+                        existing = client_sessions.put( ws_url, client_session );
 		            	
 		            	if ( existing != null ){
 		            		
@@ -621,13 +638,17 @@ TrackerProxy
 		            		}
 		            	}
 		            }
-		            client_session.startHeartbeat();
-		            client_session.send(announce);
-		            // Restore previously registered torrents without creating new offers.
-		            for (String refresh : announce_registry.refreshExcept(ws_url,
-		            	(!scrape && !is_stop) ? info_hash : null)) {
-		            	client_session.send(refresh);
-		            }
+		            diagnostic("connection-registered", ws_url, "replaced=" + (existing != null));
+                    client_session.startHeartbeat();
+                    client_session.send(announce);
+                    // Restore previously registered torrents without creating new offers.
+                    List<String> refreshes = announce_registry.refreshExcept(ws_url,
+                        (!scrape && !is_stop) ? info_hash : null);
+                    for (String refresh : refreshes) {
+                        client_session.send(refresh);
+                    }
+                    diagnostic("announces-restored", ws_url,
+                        "count=" + refreshes.size() + " offersRegenerated=false");
 		            }
 		            }
 				}
@@ -642,10 +663,13 @@ TrackerProxy
 						if (removed) client_sessions.remove(ws_url);
 					}
 					if (removed) client_session.close();
-					throw new IOException("Tracker announce timed out");
+                    diagnostic("announce-timeout", ws_url,
+                        "evicted=" + removed + " timeoutMs=" + (read_timeout - 5000));
+                    throw new IOException("Tracker announce timed out");
 				}
 				if ( reply.containsKey("failure reason") ){
-					throw new IOException("Tracker rejected announce: " + reply.get("failure reason"));
+                    diagnostic("announce-rejected", ws_url, "trackerFailure=true");
+                    throw new IOException("Tracker rejected announce: " + reply.get("failure reason"));
 				}
 				
 				byte[] reply_bytes;
@@ -738,10 +762,9 @@ TrackerProxy
 		}
 	}
 	
-	public void
-	destroy()
-	{
-		synchronized( client_sessions ){
+	public void destroy() {
+        diagnostic("proxy-shutdown", null, "activeSessions=" + client_sessions.size());
+        synchronized( client_sessions ){
 		 
 			 for ( ClientSession s: client_sessions.values()){
 			 
@@ -794,6 +817,9 @@ TrackerProxy
     	private final TrackerPingState ping_state = new TrackerPingState();
     	private ScheduledFuture<?> ping_task;
     	private final TrackerSocketWriter writer;
+        private long sentMessages;
+        private long receivedPongs;
+        private long sendFailures;
     	
     	private ByteArrayHashMap<AnnounceData>	announce_map = new ByteArrayHashMap<>();
     	    	
@@ -812,7 +838,8 @@ TrackerProxy
     	private void startHeartbeat() {
     		ping_task = ping_executor.scheduleAtFixedRate(() -> {
     			if (!session.isOpen()) {
-    				invalidate();
+                    diagnostic("heartbeat-socket-closed", ws_url, "evicting=true");
+                    invalidate();
     				return;
     			}
     			if (!ping_state.startPing(SystemTime.getMonotonousTime())) {
@@ -820,20 +847,25 @@ TrackerProxy
     			}
     			ping_executor.schedule(() -> {
     				if (ping_state.isExpired(SystemTime.getMonotonousTime(), PONG_TIMEOUT_MS)) {
-    					invalidate();
+                        diagnostic("heartbeat-pong-timeout", ws_url, "timeoutMs=" + PONG_TIMEOUT_MS);
+                        invalidate();
     				}
     			}, PONG_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     			try {
     				session.getBasicRemote().sendPing(ByteBuffer.allocate(0));
-    			} catch (Exception e) {
-    				invalidate();
+                } catch (Exception e) {
+                    diagnostic("heartbeat-send-failed", ws_url, "type=" + e.getClass().getSimpleName());
+                    invalidate();
     			}
     		}, PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
     	}
 
     	private void pongReceived() {
-    		ping_state.pong();
-    	}
+            ping_state.pong();
+            long count = ++receivedPongs;
+            if (count == 1 || count % 100 == 0)
+                diagnostic("heartbeat-pong", ws_url, "count=" + count);
+        }
 
     	private void invalidate() {
     		synchronized (client_sessions) {
@@ -850,7 +882,17 @@ TrackerProxy
     		
     		throws Exception
     	{
-    		writer.send(str);
+    		try {
+                writer.send(str);
+                long count = ++sentMessages;
+                if (count == 1 || count % 100 == 0)
+                    diagnostic("send-ok", ws_url, "count=" + count);
+            } catch (Exception e) {
+                sendFailures++;
+                diagnostic("bounded-send-failed", ws_url,
+                    "type=" + e.getClass().getSimpleName() + " errors=" + sendFailures);
+                throw e;
+            }
     	}
     	
     	private Session
@@ -866,7 +908,8 @@ TrackerProxy
     	}
     	
     	private void announceFailed(Map failure) {
-    		synchronized( this ){
+            diagnostic("tracker-failure-received", ws_url, "pendingEntries=" + announce_map.size());
+            synchronized( this ){
     			for ( AnnounceData ad: announce_map.values() ){
     				ad.last_announce = failure;
     				ad.last_announce_time = SystemTime.getMonotonousTime();
@@ -953,8 +996,15 @@ TrackerProxy
     			ping_task.cancel(false);
     		}
     		synchronized( this ){
-    			terminated = true;
-    			for ( AnnounceData ad: announce_map.values() ){
+                if (terminated) return;
+                terminated = true;
+                int pending = 0;
+                for (AnnounceData ad : announce_map.values())
+                    if (ad.announce_sem != null) pending++;
+                diagnostic("session-cleanup", ws_url,
+                    "pendingReleased=" + pending + " sent=" + sentMessages
+                    + " pongs=" + receivedPongs + " sendFailures=" + sendFailures);
+                for ( AnnounceData ad: announce_map.values() ){
     				ad.last_announce = null;
     				if ( ad.announce_sem != null ){
     					ad.announce_sem.releaseForever();
