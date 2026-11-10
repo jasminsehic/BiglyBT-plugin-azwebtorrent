@@ -37,6 +37,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
@@ -90,6 +91,7 @@ TrackerProxy
     private final long pingIntervalMs;
     private final long pongTimeoutMs;
     private final long writerTimeoutMs;
+    private final Supplier<TrustManager[]> trackerTrustManagers;
     private final int minimumReadTimeoutMs;
 	private final ScheduledExecutorService ping_executor = Executors.newScheduledThreadPool(2, task -> {
 		Thread thread = new Thread(task, "azwebtorrent-tracker-ping");
@@ -112,12 +114,24 @@ TrackerProxy
     TrackerProxy(WebTorrentPlugin _plugin, Listener _listener,
             long pingIntervalMs, long pongTimeoutMs,
             long writerTimeoutMs, int minimumReadTimeoutMs) {
+        this(_plugin, _listener, pingIntervalMs, pongTimeoutMs,
+            writerTimeoutMs, minimumReadTimeoutMs,
+            SESecurityManager::getAllTrustingTrustManager);
+    }
+
+    // Headless harness supplies JSSE defaults instead of initializing the
+    // full BiglyBT platform merely to test handshake failure and recovery.
+    TrackerProxy(WebTorrentPlugin _plugin, Listener _listener,
+            long pingIntervalMs, long pongTimeoutMs,
+            long writerTimeoutMs, int minimumReadTimeoutMs,
+            Supplier<TrustManager[]> trackerTrustManagers) {
         plugin = _plugin;
         listener = _listener;
         this.pingIntervalMs = pingIntervalMs;
         this.pongTimeoutMs = pongTimeoutMs;
         this.writerTimeoutMs = writerTimeoutMs;
         this.minimumReadTimeoutMs = minimumReadTimeoutMs;
+        this.trackerTrustManagers = trackerTrustManagers;
     }
 
 	@Override
@@ -383,7 +397,7 @@ TrackerProxy
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
 		            	
-			            TrustManager[] trustAllCerts = SESecurityManager.getAllTrustingTrustManager();				
+			            TrustManager[] trustAllCerts = trackerTrustManagers.get();				
 						
 						SSLContext sc = SSLContext.getInstance("SSL");
 							
