@@ -340,6 +340,12 @@ class TrackerProxyIntegrationTest {
                 String response = requestTo(local.url(), HASH_A, 0);
                 assertFalse(response.contains("failure reason"), response);
                 assertEquals(1, local.connections.get(), "Real TLS and WebSocket upgrade expected");
+                // End the WebSocket normally before shutting down the TLS fixture;
+                // forcibly closing an active SSLSocket can raise an expected
+                // SSLException on Windows and mask genuine connection failures.
+                proxy.destroy();
+                await(() -> local.closed.get() == 1);
+                local.assertNoAsyncFailures();
             }
         } finally {
             Files.deleteIfExists(keystore.toPath());
