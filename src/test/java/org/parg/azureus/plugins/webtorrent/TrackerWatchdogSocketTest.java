@@ -49,6 +49,19 @@ class TrackerWatchdogSocketTest {
             Method start = type.getDeclaredMethod("startHeartbeat");
             start.setAccessible(true);
             start.invoke(client);
+            long firstPingDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (pings.get() == 0 && System.nanoTime() < firstPingDeadline) Thread.sleep(10);
+            assertTrue(pings.get() >= 1, "Watchdog must send ping frames");
+            // BiglyBT SystemTime's cached clock may not advance in a mock-only host.
+            // Age the unanswered ping to exercise the watchdog independently of the host ticker.
+            Field pingStateField = type.getDeclaredField("ping_state");
+            pingStateField.setAccessible(true);
+            Object pingState = pingStateField.get(client);
+            Field sentAt = TrackerPingState.class.getDeclaredField("sentAt");
+            sentAt.setAccessible(true);
+            synchronized (pingState) {
+                sentAt.setLong(pingState, com.biglybt.core.util.SystemTime.getMonotonousTime() - 1000);
+            }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (!closed.get() && System.nanoTime() < deadline) Thread.sleep(10);
             assertTrue(pings.get() >= 1, "Watchdog must send WebSocket ping frames");
