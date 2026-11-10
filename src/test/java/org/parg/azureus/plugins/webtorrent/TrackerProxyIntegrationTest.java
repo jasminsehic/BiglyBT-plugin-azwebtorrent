@@ -3,6 +3,15 @@ package org.parg.azureus.plugins.webtorrent;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.nio.file.Files;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import java.lang.reflect.Field;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Proxy;
@@ -280,6 +289,61 @@ class TrackerProxyIntegrationTest {
         // Do not stop Tyrus mid-callback merely because the caller got its reply.
         await(() -> tracker.messagesProcessed.get() >= 2);
         tracker.assertNoAsyncFailures();
+    }
+
+    @Test @Timeout(40)
+    void encryptedWssHandshakeAndAnnounceWorkOnJava8() throws Exception {
+        // Use the JDK's own keytool to create an ephemeral loopback-only TLS
+        // identity; avoid an external tracker or a committed private key.
+        File keystore = Files.createTempFile("azwebtorrent-wss-test-", ".jks").toFile();
+        Files.delete(keystore.toPath()); // keytool creates its own keystore.
+        char[] pass = "changeit".toCharArray();
+        try {
+            File keytool = new File(new File(System.getProperty("java.home"), "bin"),
+                System.getProperty("os.name").startsWith("Windows") ? "keytool.exe" : "keytool");
+            Process generator = new ProcessBuilder(
+                keytool.getAbsolutePath(), "-genkeypair", "-alias", "localtest",
+                "-keyalg", "RSA", "-keysize", "2048", "-validity", "2",
+                "-storetype", "JKS", "-keystore", keystore.getAbsolutePath(),
+                "-storepass", "changeit", "-keypass", "changeit",
+                "-dname", "CN=localhost",
+                "-ext", "SAN=IP:127.0.0.1,DNS:localhost",
+                "-noprompt").redirectErrorStream(true).start();
+            ByteArrayOutputStream keytoolOutput = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            int n;
+            try (java.io.InputStream in = generator.getInputStream()) {
+                while ((n = in.read(buffer)) != -1) keytoolOutput.write(buffer, 0, n);
+            }
+            assertTrue(generator.waitFor(15, TimeUnit.SECONDS), "keytool did not terminate");
+            assertEquals(0, generator.exitValue(),
+                new String(keytoolOutput.toByteArray(), StandardCharsets.UTF_8));
+
+            KeyStore store = KeyStore.getInstance("JKS");
+            try (FileInputStream input = new FileInputStream(keystore)) {
+                store.load(input, pass);
+            }
+            KeyManagerFactory keys = KeyManagerFactory.getInstance(
+                KeyManagerFactory.getDefaultAlgorithm());
+            keys.init(store, pass);
+            TrustManagerFactory trusts = TrustManagerFactory.getInstance(
+                TrustManagerFactory.getDefaultAlgorithm());
+            trusts.init(store);
+            TrustManager[] trustedServer = trusts.getTrustManagers();
+            SSLContext localTls = SSLContext.getInstance("TLS");
+            localTls.init(keys.getKeyManagers(), null, new SecureRandom());
+
+            proxy.destroy();
+            proxy = new TrackerProxy(null, host, 60_000, 30_000, 1_000,
+                30_000, () -> trustedServer);
+            try (RawNoPongWebSocketTracker local = new RawNoPongWebSocketTracker(localTls)) {
+                String response = requestTo(local.url(), HASH_A, 0);
+                assertFalse(response.contains("failure reason"), response);
+                assertEquals(1, local.connections.get(), "Real TLS and WebSocket upgrade expected");
+            }
+        } finally {
+            Files.deleteIfExists(keystore.toPath());
+        }
     }
 
     @Test @Timeout(30)
