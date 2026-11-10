@@ -21,10 +21,10 @@ import java.util.concurrent.TimeoutException;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-import javax.websocket.ClientEndpointConfig;
-import javax.websocket.Endpoint;
-import javax.websocket.EndpointConfig;
-import javax.websocket.Session;
+import jakarta.websocket.ClientEndpointConfig;
+import jakarta.websocket.Endpoint;
+import jakarta.websocket.EndpointConfig;
+import jakarta.websocket.Session;
 import org.glassfish.tyrus.client.ClientManager;
 import org.glassfish.tyrus.client.ClientProperties;
 
@@ -104,11 +104,11 @@ public final class DirectWssProbe {
                 pending = worker.submit(() -> manager.connectToServer(ENDPOINT, config, uri));
             }
             session = pending.get(11_000, TimeUnit.MILLISECONDS);
-            System.out.println("Tyrus 1.21 " + (async ? "async" : "sync")
+            System.out.println("Tyrus 2.0.1 " + (async ? "async" : "sync")
                 + " WSS: OPEN " + elapsed(started) + "ms");
             success = true;
         } catch (Throwable failure) {
-            System.out.println("Tyrus 1.21 " + (async ? "async" : "sync")
+            System.out.println("Tyrus 2.0.1 " + (async ? "async" : "sync")
                 + " WSS: FAILED " + elapsed(started) + "ms");
             reportFailure(failure);
         } finally {

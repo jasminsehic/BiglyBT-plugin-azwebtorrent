@@ -21,7 +21,7 @@ $env:JAVA_HOME = $BuildJdk
 $env:Path = "$(Join-Path $BuildJdk 'bin');$env:Path"
 $mavenCommand = Get-Command mvn -ErrorAction SilentlyContinue
 if (-not $mavenCommand) {
-    throw 'Maven is not installed/on PATH. Install Apache Maven 3.9+; the new plugin uses Maven to resolve the complete Tyrus 1.21 / WebRTC dependency set.'
+    throw 'Maven is not installed/on PATH. Install Apache Maven 3.9+; the new plugin uses Maven to resolve the complete Tyrus 2.0.1 / WebRTC dependency set.'
 }
 
 Write-Host '--- Build JDK ---'
