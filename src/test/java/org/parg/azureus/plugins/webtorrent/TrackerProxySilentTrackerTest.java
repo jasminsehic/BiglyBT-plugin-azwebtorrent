@@ -50,7 +50,7 @@ class TrackerProxySilentTrackerTest {
             + "&info_hash=ABCDEFGHIJKLMNOPQRST&peer_id=-MOCK01-123456789012";
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         proxy.handleRequest(url, bytes);
-        return bytes.toString(StandardCharsets.ISO_8859_1);
+        return new String(bytes.toByteArray(), StandardCharsets.ISO_8859_1);
     }
 
     @Test @Timeout(15)
