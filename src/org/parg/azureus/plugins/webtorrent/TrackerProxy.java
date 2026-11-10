@@ -386,7 +386,11 @@ TrackerProxy
                         diagnostic("connection-reused-after-gate", ws_url, "duplicateHandshakeAvoided=true");
                         client_session.send(announce);
 		            	} else {
-		            diagnostic("connect-start", ws_url, "serialized=true");
+                    // An implicit Java proxy can prevent WSS handshakes and
+                    // violate the user's direct-only routing requirement.
+                    // Do not modify the JVM-wide ProxySelector.
+                    TrackerDirectRouting.requireDirect(new URI(ws_url));
+		            diagnostic("connect-start", ws_url, "serialized=true directOnly=true");
                     ClientManager client = ClientManager.createClient();
                     // The previous 10-second cap prematurely rejected slow WSS
                     // handshakes; reserve five seconds of the caller's read budget
