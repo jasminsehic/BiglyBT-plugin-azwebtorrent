@@ -387,6 +387,9 @@ TrackerProxy
                         client_session.send(announce);
 		            	} else {
 		            diagnostic("connect-start", ws_url, "serialized=true");
+                    diagnostic("runtime-context", ws_url,
+                        WssRuntimeDiagnostics.classpath() + " routes="
+                            + WssRuntimeDiagnostics.proxyTypes(new URI(ws_url)));
                     ClientManager client = ClientManager.createClient();
                     // The previous 10-second cap prematurely rejected slow WSS
                     // handshakes; reserve five seconds of the caller's read budget
@@ -409,6 +412,9 @@ TrackerProxy
 				        SSLEngineConfigurator sslEngineConfigurator = new SSLEngineConfigurator(sc );
 				        
 			            client.getProperties().put( ClientProperties.SSL_ENGINE_CONFIGURATOR, sslEngineConfigurator);
+                        diagnostic("tls-context-configured", ws_url,
+                            "context=" + sc.getProtocol()
+                                + " trustManagers=" + (trustAllCerts == null ? 0 : trustAllCerts.length));
 		            }
 		            
 		            ClientEndpointConfig cec = ClientEndpointConfig.Builder.create().build();
@@ -424,7 +430,12 @@ TrackerProxy
 				                	final Session 		session, 
 				                	EndpointConfig 		config) 
 				                {
-                                    if (!handshake.onOpen(session)) return;
+                                    diagnostic("socket-open-enter", ws_url,
+                                        "thread=" + Thread.currentThread().getState());
+                                    if (!handshake.onOpen(session)) {
+                                        diagnostic("socket-open-abandoned", ws_url, "lateConnection=true");
+                                        return;
+                                    }
                                     try{
 				                    	
 				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
@@ -627,6 +638,8 @@ TrackerProxy
                                         // Initial announce is sent after this session is registered below.
 				                        
 				                    }catch( Exception e ){
+                                        diagnostic("socket-open-init-failed", ws_url,
+                                            "type=" + e.getClass().getSimpleName());
 				                    	
 				                    	 synchronized( client_sessions ){
 				                    		 
@@ -640,6 +653,7 @@ TrackerProxy
 					                		 }
 				                    	 }
 				                    }
+                                    diagnostic("socket-open-exit", ws_url, "callbackReturned=true");
 				                }
 				                
 				                @Override
@@ -676,6 +690,9 @@ TrackerProxy
 				                	 }
 				                }
                             }, cec, new URI( ws_url ));
+                    diagnostic("handshake-dispatched", ws_url,
+                        "futureDone=" + connecting.isDone()
+                            + " timeoutMs=" + handshakeTimeout);
                     Session session;
                     try {
                         session = handshake.await(connecting, handshakeTimeout);
@@ -692,6 +709,9 @@ TrackerProxy
                                 + " cause=" + (cause == null
                                     ? e.getClass().getSimpleName()
                                     : cause.getClass().getSimpleName()));
+                        if (e.getMessage().contains("timed out")) {
+                            WssRuntimeDiagnostics.logHandshakeThreads(plugin, ws_url);
+                        }
                         throw e;
                     }
 
