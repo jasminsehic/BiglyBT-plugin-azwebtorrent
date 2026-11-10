@@ -76,7 +76,7 @@ jobs:
                   if name.endswith("/module-info.class") or name == "module-info.class" or name.startswith("META-INF/versions/"):
                       continue
                   data = archive.read(name)[:8]
-                  if len(data) != 8 or data[:4] != b"\\xca\\xfe\\xba\\xbe":
+                  if len(data) != 8 or data[:4] != b"\xca\xfe\xba\xbe":
                       incompatible.append((name, "invalid class header"))
                       continue
                   major = struct.unpack(">H", data[6:8])[0]
