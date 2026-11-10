@@ -782,7 +782,7 @@ TrackerProxy
                 "type=" + e.getClass().getSimpleName());
             Map failure = new HashMap();
 			
-			failure.put( "failure reason", Debug.getNestedExceptionMessage( e ));
+			failure.put( "failure reason", failureMessage( e ));
 			
 			try{
 				byte[] x = BEncoder.encode( failure );
@@ -810,6 +810,27 @@ TrackerProxy
 		}
 	}
 	
+
+    // Avoid initializing BiglyBT's global Debug/diagnostic subsystem when this
+    // proxy simply needs to serialize a tracker failure to an HTTP response.
+    // That subsystem may require native libraries absent from a headless test host.
+    static String failureMessage(Throwable failure) {
+        StringBuilder message = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < 8; depth++) {
+            String detail = current.getMessage();
+            if (detail != null && !detail.trim().isEmpty()) {
+                if (message.length() > 0) message.append(": ");
+                message.append(detail);
+            }
+            Throwable cause = current.getCause();
+            if (cause == current) break;
+            current = cause;
+        }
+        return message.length() > 0 ? message.toString()
+            : failure.getClass().getSimpleName();
+    }
+
 	public void destroy() {
         diagnostic("proxy-shutdown", null, "activeSessions=" + client_sessions.size());
         synchronized( client_sessions ){
