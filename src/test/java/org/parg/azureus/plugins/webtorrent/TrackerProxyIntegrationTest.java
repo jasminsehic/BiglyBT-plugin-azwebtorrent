@@ -187,7 +187,7 @@ class TrackerProxyIntegrationTest {
         @OnMessage
         public void onMessage(String message, Session session) throws Exception {
             MockTracker t = current.get();
-            JSONObject request = (JSONObject) new JSONParser().parse(message);
+            JSONObject request = (JSONObject) new JSONParser().parse(new java.io.StringReader(message));
             t.received.add(request);
             String hash = (String) request.get("info_hash");
             JSONObject response = new JSONObject();
@@ -199,7 +199,7 @@ class TrackerProxyIntegrationTest {
                 response.put("incomplete", 0);
                 response.put("interval", 125);
             }
-            session.getBasicRemote().sendText(response.toJSONString());
+            session.getBasicRemote().sendText(com.biglybt.util.JSONUtils.encodeToJSON(response));
             JSONArray offers = (JSONArray) request.get("offers");
             if (!t.reject && offers != null && !offers.isEmpty()) {
                 JSONObject first = (JSONObject) offers.get(0);
@@ -210,7 +210,7 @@ class TrackerProxyIntegrationTest {
                 envelope.put("answer", answer);
                 envelope.put("info_hash", hash);
                 envelope.put("offer_id", first.get("offer_id"));
-                session.getBasicRemote().sendText(envelope.toJSONString());
+                session.getBasicRemote().sendText(com.biglybt.util.JSONUtils.encodeToJSON(envelope));
             }
         }
     }
