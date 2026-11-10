@@ -58,6 +58,14 @@ jobs:
         run: |
           jar tf target/azwebtorrent.jar | grep -Fx 'plugin.properties'
           jar tf target/azwebtorrent.jar | grep -Fx 'org/parg/azureus/plugins/webtorrent/TrackerProxy.class'
+      - name: Preserve original Jakarta WebSocket API
+        shell: bash
+        run: |
+          jar tf target/azwebtorrent.jar | grep -Fx 'jakarta/websocket/Session.class'
+          if jar tf target/azwebtorrent.jar | grep -qE '^javax/websocket/'; then
+            echo "::error::Unexpected javax.websocket dependency"
+            exit 1
+          fi
       - name: Reject Java 9+ class files in installable JAR
         shell: bash
         run: |
