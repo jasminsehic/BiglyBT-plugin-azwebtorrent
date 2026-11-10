@@ -106,7 +106,7 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
                     pings.incrementAndGet(); // Deliberately never reply with a pong.
                 } else if (opcode == 1) {
                     JSONObject message = (JSONObject) new JSONParser()
-                        .parse(new String(payload, StandardCharsets.UTF_8));
+                        .parse(new java.io.StringReader(new String(payload, StandardCharsets.UTF_8)));
                     JSONObject announce = new JSONObject();
                     announce.put("info_hash", message.get("info_hash"));
                     announce.put("complete", 1);
