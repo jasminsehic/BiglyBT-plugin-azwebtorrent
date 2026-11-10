@@ -203,7 +203,9 @@ class TrackerProxyIntegrationTest {
     private void useFastFailureTimeouts() {
         proxy.destroy();
         System.setProperty("sun.net.client.defaultReadTimeout", "6000");
-        proxy = new TrackerProxy(null, host, 100, 250, 120, 6000);
+        // A null TrustManager[] selects JSSE defaults; this is a headless test only.
+        // Production retains BiglyBT's configured trust manager provider.
+        proxy = new TrackerProxy(null, host, 100, 250, 120, 6000, () -> null);
     }
 
     @Test @Timeout(20)
