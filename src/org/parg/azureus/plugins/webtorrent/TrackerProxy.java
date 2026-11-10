@@ -374,6 +374,12 @@ TrackerProxy
 		            	} else {
 		            diagnostic("connect-start", ws_url, "serialized=true");
                     ClientManager client = ClientManager.createClient();
+                    // Bound TLS and HTTP upgrade negotiation as well as the announce wait.
+                    // The read timeout remains the overall caller budget.
+                    int handshakeTimeout = (int) Math.min(10_000L,
+                        Math.max(1_000L, read_timeout - 5_000L));
+                    client.getProperties().put(ClientProperties.HANDSHAKE_TIMEOUT,
+                        handshakeTimeout);
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
 		            	
