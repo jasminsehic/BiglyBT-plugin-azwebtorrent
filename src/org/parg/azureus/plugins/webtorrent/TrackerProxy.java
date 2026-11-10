@@ -31,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Future;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
@@ -317,6 +318,10 @@ TrackerProxy
 							client_session.send(announce);
 						} else {
 		            ClientManager client = ClientManager.createClient();
+                    int handshakeTimeout = (int) Math.min(10_000L,
+                        Math.max(1_000L, read_timeout - 5_000L));
+                    client.getProperties().put(ClientProperties.HANDSHAKE_TIMEOUT,
+                        handshakeTimeout);
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
 		            	
@@ -333,8 +338,9 @@ TrackerProxy
 		            
 		            ClientEndpointConfig cec = ClientEndpointConfig.Builder.create().build();
 		            
-		            Session session = 
-		            	client.connectToServer(
+		            TrackerHandshake handshake = new TrackerHandshake();
+                    Future<Session> connecting =
+                        client.asyncConnectToServer(
 		            		new Endpoint() 
 		            		{
 				                @Override
@@ -342,8 +348,9 @@ TrackerProxy
 				                onOpen(
 				                	final Session 		session, 
 				                	EndpointConfig 		config) 
-				                {
-				                    try{
+                                {
+                                    if (!handshake.onOpen(session)) return;
+                                    try{
 				                    	
 				                        session.addMessageHandler(new MessageHandler.Whole<String>() {
 	
@@ -546,7 +553,7 @@ TrackerProxy
 				                	 }
 				                }
 				            }, cec, new URI( ws_url ));
-	            
+                    Session session = handshake.await(connecting, handshakeTimeout);
 		            client_session = new ClientSession( session );
 		            
 		            synchronized( client_sessions ){
