@@ -40,15 +40,25 @@ separate manual BiglyBT application smoke test remains required.
 ## Overnight soak diagnostics
 
 The integration branch writes structured entries via the plugin's existing
-**WebTorrent** logging channel, prefixed `[soak][proxy]` or
+**WebTorrent** logging channel. This branch explicitly enables BiglyBT's
+`LoggerChannel.setDiagnostic(16 MiB, true)` and `setForce(true)` so the
+events persist in rotating diagnostic files even in non-beta releases.
+The files live under the active BiglyBT user-data directory's `logs` folder,
+usually `%APPDATA%\\BiglyBT\\logs\\WebTorrent_1.log` and
+`WebTorrent_2.log` on Windows (a custom BiglyBT profile changes the root).
+The channel also retains its ordinary plugin UI log view. Entries are prefixed `[soak][proxy]` or
 `[soak][hosted-tracker]`. Look for:
 
 - `connect-start`, `socket-open`, `connection-registered`, and
   `connection-reused-after-gate` for connection lifecycle and serialized creation.
 - `heartbeat-pong`, `heartbeat-pong-timeout`,
   `heartbeat-send-failed` and `heartbeat-socket-closed` for liveness handling.
-- `send-ok`, `bounded-send-failed`, `announce-timeout`, and
-  `announce-rejected` for write limits, stale responses and failure propagation.
+- `send-ok`, `bounded-send-failed`, `announce-timeout`,
+  `announce-rejected`, `announce-response`, and `stale-response-ignored`
+  for write limits, stale responses and failure propagation.
+- `offer-received` and `answer-delivered` for sampled signalling activity;
+  the offer/answer SDP and identifying values are not logged.
+- `socket-error` for failures beyond a simple orderly close.
 - `announces-restored` with a replay count and `offersRegenerated=false`.
 - `offers-generated` for offer generation counts (first three batches and each
   hundredth batch).
@@ -59,7 +69,10 @@ Common sends and pong events are sampled to limit noise. No SDP bodies,
 peer IDs, torrent hashes, tracker URL query parameters, usernames or passwords
 are included in the new messages. If the host logs don't contain
 `[soak]` events, check whether the installed JAR was built from the updated
-integration branch.
+integration branch. `[soak][plugin] diagnostic-file-enabled` appears when
+the logging file is activated. The five tracker reliability fixes (#3–#7)
+have runtime event coverage; the Maven/CI base (#2) is a packaging change
+and has no runtime tracker event to instrument.
 
 For a manual soak, install the generated `target/azwebtorrent.jar` in a
 **real** BiglyBT 4.1.0.0 Windows setup and capture the WebTorrent plugin log
