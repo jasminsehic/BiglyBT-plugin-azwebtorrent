@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.SocketException;
+import javax.net.ssl.SSLContext;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -37,14 +38,27 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
     private final Thread acceptThread;
     private volatile boolean running = true;
 
+    private final boolean tls;
+
     RawNoPongWebSocketTracker() throws Exception {
-        listener = new ServerSocket(0, 20, InetAddress.getByName("127.0.0.1"));
+        this(null);
+    }
+
+    RawNoPongWebSocketTracker(SSLContext serverTls) throws Exception {
+        tls = serverTls != null;
+        listener = tls
+            ? serverTls.getServerSocketFactory().createServerSocket(
+                0, 20, InetAddress.getByName("127.0.0.1"))
+            : new ServerSocket(0, 20, InetAddress.getByName("127.0.0.1"));
         acceptThread = new Thread(this::accept, "mock-raw-tracker-accept");
         acceptThread.setDaemon(true);
         acceptThread.start();
     }
 
-    String url() { return "ws://127.0.0.1:" + listener.getLocalPort() + "/tracker"; }
+    String url() {
+        return (tls ? "wss" : "ws") + "://127.0.0.1:"
+            + listener.getLocalPort() + "/tracker";
+    }
 
     private void accept() {
         while (running) {
