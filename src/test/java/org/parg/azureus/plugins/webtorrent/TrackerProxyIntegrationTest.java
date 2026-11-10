@@ -155,6 +155,9 @@ class TrackerProxyIntegrationTest {
         assertFalse(request(HASH_A, 1).contains("failure reason"));
         assertFalse(request(HASH_B, 1).contains("failure reason"));
         assertEquals(2, host.offersRequested.get());
+        // Both mock answer sends must finish before deliberately closing sockets.
+        // Otherwise the server can encounter a real async write-after-close error.
+        await(() -> host.answersReceived.get() == 2);
         tracker.closeConnections();
         await(() -> tracker.connectionsClosed.get() >= 1);
         // The server-side close must reach the client endpoint before reusing the URL.
