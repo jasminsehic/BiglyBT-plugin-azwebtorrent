@@ -10,31 +10,99 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '8'
           cache: maven
       - name: Download supported BiglyBT host runtime
+        shell: bash
         run: |
           curl --fail --location --retry 3 \
             "https://github.com/BiglySoftware/BiglyBT/releases/download/v4.1.0.0/GitHub_BiglyBT.jar" \
-            --output /tmp/BiglyBT.jar
-          test -s /tmp/BiglyBT.jar
+            --output "$RUNNER_TEMP/BiglyBT.jar"
+          test -s "$RUNNER_TEMP/BiglyBT.jar"
       - name: Install host API into Maven cache
+        shell: bash
         run: |
           mvn --batch-mode --no-transfer-progress install:install-file \
-            -Dfile=/tmp/BiglyBT.jar \
+            -Dfile="$RUNNER_TEMP/BiglyBT.jar" \
             -DgroupId=com.biglybt -DartifactId=biglybt-host \
             -Dversion=4.1.0.0 -Dpackaging=jar -DgeneratePom=true
       - name: Compile, test, and package plugin
-        run: mvn --batch-mode --no-transfer-progress clean verify
+        shell: bash
+        run: |
+          set -o pipefail
+          mvn --batch-mode --no-transfer-progress clean verify 2>&1 | tee build.log
+      - name: Reject JVM exceptions printed outside test results
+        shell: bash
+        run: |
+          # Some host APIs log failures from background or native initialization
+          # without propagating them to JUnit. An otherwise green build must not
+          # silently accept these stack traces.
+          if grep -Enm1 '(^|[[:space:]])((java|javax|jakarta)\.[[:alnum:]_.$]*(Exception|Error):|Exception in thread|This is BAD - fix me!)' build.log; then
+            echo "::error::Unexpected JVM exception in Maven output"
+            exit 1
+          fi
+      - name: Verify plugin JAR entries
+        shell: bash
+        run: |
+          jar tf target/azwebtorrent.jar | grep -Fx 'plugin.properties'
+          jar tf target/azwebtorrent.jar | grep -Fx 'org/parg/azureus/plugins/webtorrent/TrackerProxy.class'
+      - name: Preserve original Jakarta WebSocket API
+        shell: bash
+        run: |
+          jar tf target/azwebtorrent.jar | grep -Fx 'jakarta/websocket/Session.class'
+          if jar tf target/azwebtorrent.jar | grep -qE '^javax/websocket/'; then
+            echo "::error::Unexpected javax.websocket dependency: preserve the original Jakarta WebSocket API"
+            exit 1
+          fi
+      - name: Reject Java 9+ class files in installable JAR
+        shell: bash
+        run: |
+          python - <<'PY'
+          import struct
+          import sys
+          import zipfile
+
+          jar = "target/azwebtorrent.jar"
+          incompatible = []
+          checked = 0
+          with zipfile.ZipFile(jar) as archive:
+              for name in archive.namelist():
+                  if not name.endswith(".class"):
+                      continue
+                  # Module descriptors and multi-release classes are not loaded by Java 8.
+                  if name.endswith("/module-info.class") or name == "module-info.class" or name.startswith("META-INF/versions/"):
+                      continue
+                  data = archive.read(name)[:8]
+                  if len(data) != 8 or data[:4] != b"\xca\xfe\xba\xbe":
+                      incompatible.append((name, "invalid class header"))
+                      continue
+                  major = struct.unpack(">H", data[6:8])[0]
+                  checked += 1
+                  if major > 52:
+                      incompatible.append((name, "class version " + str(major)))
+          print("Checked {} installable Java classes against Java 8 (major 52)".format(checked))
+          for name, reason in incompatible[:30]:
+              print("Incompatible: {} ({})".format(name, reason), file=sys.stderr)
+          if incompatible:
+              sys.exit("Found {} Java 9+ or invalid class files".format(len(incompatible)))
+          PY
+      - name: Verify Windows WebRTC native library is packaged
+        if: runner.os == 'Windows'
+        shell: bash
+        run: jar tf target/azwebtorrent.jar | grep -Fx 'webrtc-java.dll'
       - name: Upload installable plugin JAR
         uses: actions/upload-artifact@v4
         with:
-          name: azwebtorrent-jar
+          name: azwebtorrent-jar-${{ matrix.os }}
           path: target/azwebtorrent.jar
           if-no-files-found: error
