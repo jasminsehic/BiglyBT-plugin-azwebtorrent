@@ -4,7 +4,7 @@ The plugin has its original Java sources under `src/org`. A Maven build is provi
 
 ## Build
 
-Install Java 21 and Maven 3.9+, then download the BiglyBT 4.1.0.0 host runtime:
+Install Java 8 (or compile with JDK 21 and Java 8 release targeting) and Maven 3.9+, then download the BiglyBT 4.1.0.0 host runtime:
 
 ```sh
 curl -fL https://github.com/BiglySoftware/BiglyBT/releases/download/v4.1.0.0/GitHub_BiglyBT.jar -o /tmp/BiglyBT.jar
@@ -22,4 +22,6 @@ The plugin calls `RTCStats.getMembers()`, present in `webrtc-java` 0.10.0 and re
 
 ## Cross-platform CI
 
-GitHub Actions runs `mvn clean verify` on Ubuntu and Windows, checks the shaded JAR contains `plugin.properties` and the tracker proxy class, and checks that the Windows JAR contains `webrtc-java.dll`. The BiglyBT host API is downloaded from the supported 4.1.0.0 release and is not bundled in the plugin. Each platform uploads its installable JAR as a build artifact.
+GitHub Actions runs `mvn clean verify` using Java 8 on Ubuntu and Windows, checks the shaded JAR contains `plugin.properties` and the tracker proxy class, and checks that the Windows JAR contains `webrtc-java.dll`. The BiglyBT host API is downloaded from the supported 4.1.0.0 release and is not bundled in the plugin. Each platform uploads its installable JAR as a build artifact.
+
+The original plugin uses `jakarta.websocket` and Tyrus 2.0.1 (Grizzly 3.x). The build must preserve the Jakarta API and generate Java 8-compatible bytecode. Never replace it with the unrelated `javax.websocket`/Tyrus 1.x API.
