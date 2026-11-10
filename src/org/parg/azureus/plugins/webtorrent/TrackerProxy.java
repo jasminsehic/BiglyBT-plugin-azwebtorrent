@@ -396,10 +396,7 @@ TrackerProxy
 		            
 		            ClientEndpointConfig cec = ClientEndpointConfig.Builder.create().build();
 		            
-                    final java.util.concurrent.atomic.AtomicBoolean abandoned =
-                        new java.util.concurrent.atomic.AtomicBoolean();
-                    final java.util.concurrent.atomic.AtomicReference<Session> opened =
-                        new java.util.concurrent.atomic.AtomicReference<>();
+                    TrackerHandshake handshake = new TrackerHandshake();
                     java.util.concurrent.Future<Session> connecting =
                         client.asyncConnectToServer(
 		            		new Endpoint() 
@@ -410,11 +407,7 @@ TrackerProxy
 				                	final Session 		session, 
 				                	EndpointConfig 		config) 
 				                {
-                                    opened.set(session);
-                                    if (abandoned.get()) {
-                                        try { session.close(); } catch (Exception ignored) { }
-                                        return;
-                                    }
+                                    if (!handshake.onOpen(session)) return;
                                     try{
 				                    	
 				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
@@ -666,30 +659,14 @@ TrackerProxy
 				                	 }
 				                }
                             }, cec, new URI( ws_url ));
-                    // An endpoint may open just as the caller's deadline expires.
-                    // Close any such late session rather than leave an untracked socket.
-                    Runnable abortHandshake = () -> {
-                        abandoned.set(true);
-                        connecting.cancel(true);
-                        Session late = opened.get();
-                        if (late != null) {
-                            try { late.close(); } catch (Exception ignored) { }
-                        }
-                    };
                     Session session;
                     try {
-                        session = connecting.get(handshakeTimeout, TimeUnit.MILLISECONDS);
-                    } catch (java.util.concurrent.TimeoutException e) {
-                        abortHandshake.run();
-                        diagnostic("handshake-timeout", ws_url, "timeoutMs=" + handshakeTimeout);
-                        throw new IOException("WebSocket tracker handshake timed out", e);
-                    } catch (java.util.concurrent.ExecutionException e) {
-                        abortHandshake.run();
-                        throw new IOException("WebSocket tracker handshake failed", e.getCause());
-                    } catch (InterruptedException e) {
-                        abortHandshake.run();
-                        Thread.currentThread().interrupt();
-                        throw new IOException("WebSocket tracker handshake interrupted", e);
+                        session = handshake.await(connecting, handshakeTimeout);
+                    } catch (IOException e) {
+                        diagnostic(e.getMessage().contains("timed out")
+                                ? "handshake-timeout" : "handshake-error",
+                            ws_url, "timeoutMs=" + handshakeTimeout);
+                        throw e;
                     }
 
 		            client_session = new ClientSession( session, ws_url );
