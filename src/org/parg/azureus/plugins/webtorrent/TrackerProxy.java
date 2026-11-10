@@ -24,6 +24,12 @@ package org.parg.azureus.plugins.webtorrent;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import jakarta.websocket.PongMessage;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.util.ArrayList;
@@ -69,6 +75,16 @@ TrackerProxy
 	private final Listener				listener;
 	
 	private Map<String,ClientSession>	client_sessions = new HashMap<String, ClientSession>();
+	private static final long PING_INTERVAL_MS = 60_000;
+	private static final long PONG_TIMEOUT_MS = 30_000;
+    private final long pingIntervalMs;
+    private final long pongTimeoutMs;
+	private final ScheduledExecutorService ping_executor =
+		Executors.newScheduledThreadPool( 2, task -> {
+			Thread thread = new Thread( task, "azwebtorrent-tracker-ping" );
+			thread.setDaemon( true );
+			return thread;
+		});
 
 	private ByteArrayHashMap<byte[]>	hash_to_peer_id_map 		= new ByteArrayHashMap<>();
 	private ByteArrayHashMap<byte[]>	hash_to_scrape_peer_id_map 	= new ByteArrayHashMap<>();
@@ -77,11 +93,19 @@ TrackerProxy
 	TrackerProxy(
 		WebTorrentPlugin	_plugin,
 		Listener			_listener )
-	{
-		plugin		= _plugin;
-		listener	= _listener;
-	}
-	
+    {
+        this(_plugin, _listener, PING_INTERVAL_MS, PONG_TIMEOUT_MS);
+    }
+
+    // Timing override for deterministic watchdog integration tests.
+    TrackerProxy(WebTorrentPlugin plugin, Listener listener,
+            long pingIntervalMs, long pongTimeoutMs) {
+        this.plugin = plugin;
+        this.listener = listener;
+        this.pingIntervalMs = pingIntervalMs;
+        this.pongTimeoutMs = pongTimeoutMs;
+    }
+
 	@Override
 	public void 
 	handleRequest(
@@ -334,6 +358,17 @@ TrackerProxy
 				                {
 				                    try{
 				                    	
+				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
+				                            @Override
+				                            public void onMessage(PongMessage pong) {
+				                                synchronized (client_sessions) {
+				                                    ClientSession current = client_sessions.get(ws_url);
+				                                    if (current != null && current.getSession() == session) {
+				                                        current.pongReceived();
+				                                    }
+				                                }
+				                            }
+				                        });
 				                        session.addMessageHandler(new MessageHandler.Whole<String>() {
 	
 				                            @Override
@@ -528,11 +563,12 @@ TrackerProxy
 				                }
 				            }, cec, new URI( ws_url ));
 	            
-		            client_session = new ClientSession( session );
+		            client_session = new ClientSession( session, ws_url );
 		            
 		            synchronized( client_sessions ){
 		            	
 		            	ClientSession existing = client_sessions.put( ws_url, client_session );
+		            	client_session.startHeartbeat();
 		            	
 		            	if ( existing != null ){
 		            		
@@ -659,6 +695,7 @@ TrackerProxy
 			 
 			 client_sessions.clear();
 		 }
+		 ping_executor.shutdownNow();
 	}
     
     public interface
@@ -692,14 +729,54 @@ TrackerProxy
     ClientSession
     {
     	private Session		session;
+    	private final String ws_url;
+    	private final TrackerPingState ping_state = new TrackerPingState();
+    	private ScheduledFuture<?> ping_task;
     	
     	private ByteArrayHashMap<AnnounceData>	announce_map = new ByteArrayHashMap<>();
     	    	
     	protected
     	ClientSession(
-    		Session		_session )
+    		Session		_session,
+    		String          _ws_url )
     	{
     		session	= _session;
+    		ws_url = _ws_url;
+    	}
+
+    	private void startHeartbeat() {
+    		ping_task = ping_executor.scheduleAtFixedRate(() -> {
+    			if (!session.isOpen()) {
+    				invalidate();
+    				return;
+    			}
+    			if (!ping_state.startPing(SystemTime.getMonotonousTime())) {
+    				return;
+    			}
+    			ping_executor.schedule(() -> {
+    				if (ping_state.isExpired(SystemTime.getMonotonousTime(), pongTimeoutMs)) {
+    					invalidate();
+    				}
+    			}, pongTimeoutMs, TimeUnit.MILLISECONDS);
+    			try {
+    				session.getBasicRemote().sendPing(ByteBuffer.allocate(0));
+    			} catch (Exception error) {
+    				invalidate();
+    			}
+    		}, pingIntervalMs, pingIntervalMs, TimeUnit.MILLISECONDS);
+    	}
+
+    	private void pongReceived() {
+    		ping_state.pong();
+    	}
+
+    	private void invalidate() {
+    		synchronized (client_sessions) {
+    			if (client_sessions.get(ws_url) == this) {
+    				client_sessions.remove(ws_url);
+    			}
+    		}
+    		close();
     	}
     	
     	private void
@@ -791,6 +868,9 @@ TrackerProxy
     	private void
     	close()
     	{
+    		if (ping_task != null) {
+    			ping_task.cancel(false);
+    		}
     		try{
     			session.close();
     			
