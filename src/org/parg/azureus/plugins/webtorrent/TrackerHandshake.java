@@ -13,6 +13,13 @@ final class TrackerHandshake {
     private final AtomicBoolean abandoned = new AtomicBoolean();
     private final AtomicReference<Session> opened = new AtomicReference<>();
 
+    // Keep the WebSocket handshake within the caller's read timeout, while
+    // allowing real remote TLS handshakes longer than the old hard-coded 10 s.
+    static int timeoutForRead(int readTimeoutMillis) {
+        return (int) Math.min(25_000L,
+            Math.max(1_000L, (long) readTimeoutMillis - 5_000L));
+    }
+
     boolean onOpen(Session session) {
         opened.set(session);
         if (!abandoned.get()) return true;
