@@ -8,7 +8,7 @@
   <version>1.5.6-SNAPSHOT</version>
   <packaging>jar</packaging>
   <properties>
-    <maven.compiler.release>17</maven.compiler.release>
+    <maven.compiler.release>8</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <tyrus.version>2.0.1</tyrus.version>
     <!-- 0.10.x is the latest line exposing RTCStats.getMembers(), used by this plugin. -->
