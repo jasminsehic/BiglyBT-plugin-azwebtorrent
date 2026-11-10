@@ -43,6 +43,10 @@ jobs:
         run: |
           jar tf target/azwebtorrent.jar | grep -Fx 'plugin.properties'
           jar tf target/azwebtorrent.jar | grep -Fx 'org/parg/azureus/plugins/webtorrent/TrackerProxy.class'
+      - name: Verify Windows WebRTC native library is packaged
+        if: runner.os == 'Windows'
+        shell: bash
+        run: jar tf target/azwebtorrent.jar | grep -Fx 'webrtc-java.dll'
       - name: Upload installable plugin JAR
         uses: actions/upload-artifact@v4
         with:
