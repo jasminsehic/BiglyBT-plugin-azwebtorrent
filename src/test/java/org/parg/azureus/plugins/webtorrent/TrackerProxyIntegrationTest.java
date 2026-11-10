@@ -1,0 +1,257 @@
+package org.parg.azureus.plugins.webtorrent;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.ByteArrayOutputStream;
+import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import jakarta.websocket.OnClose;
+import jakarta.websocket.OnMessage;
+import jakarta.websocket.OnOpen;
+import jakarta.websocket.Session;
+import jakarta.websocket.server.ServerEndpoint;
+
+import org.glassfish.tyrus.server.Server;
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+/**
+ * Exercises the real TrackerProxy with a minimal fake WebRTC host and an in-process
+ * WebSocket tracker. No external tracker, BiglyBT installation or native WebRTC
+ * library is needed. The BiglyBT API classes are provided by the test classpath.
+ */
+class TrackerProxyIntegrationTest {
+    private static final String HASH_A = "ABCDEFGHIJKLMNOPQRST";
+    private static final String HASH_B = "QRSTUVWXYZABCDEFGHIJ";
+    private static final String PEER_ID = "-MOCK01-123456789012";
+    private static final String OFFER_ID = "0123456789abcdefghij";
+
+    private String previousReadTimeout;
+    private Server server;
+    private MockTracker tracker;
+    private TrackerProxy proxy;
+    private MockHost host;
+    private int port;
+
+    @BeforeEach
+    void startServer() throws Exception {
+        previousReadTimeout = System.getProperty("sun.net.client.defaultReadTimeout");
+        System.setProperty("sun.net.client.defaultReadTimeout", "30000");
+        try (ServerSocket socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        tracker = new MockTracker();
+        MockEndpoint.current.set(tracker);
+        server = new Server("127.0.0.1", port, "/", null, MockEndpoint.class);
+        server.start();
+        host = new MockHost();
+        proxy = new TrackerProxy(null, host);
+    }
+
+    @AfterEach
+    void stopServer() {
+        if (proxy != null) proxy.destroy();
+        if (server != null) server.stop();
+        MockEndpoint.current.set(null);
+        if (previousReadTimeout == null)
+            System.clearProperty("sun.net.client.defaultReadTimeout");
+        else
+            System.setProperty("sun.net.client.defaultReadTimeout", previousReadTimeout);
+    }
+
+    private String request(String hash, int numwant) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        String url = "ws://127.0.0.1:" + port + "/tracker"
+            + "?numwant=" + numwant + "&uploaded=0&downloaded=0&left=1"
+            + "&event=started&info_hash=" + hash + "&peer_id=" + PEER_ID;
+        proxy.handleRequest(url, out);
+        String response = new String(out.toByteArray(), StandardCharsets.ISO_8859_1);
+        assertTrue(response.startsWith("HTTP/1.1 200 OK"), response);
+        return response;
+    }
+
+    private static void await(Condition condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.met() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertTrue(condition.met(), "Timed out waiting for local tracker state");
+    }
+
+    private interface Condition { boolean met(); }
+
+    @Test @Timeout(20)
+    void announcesToLocalTrackerAndReusesOneSocket() throws Exception {
+        assertFalse(request(HASH_A, 0).contains("failure reason"));
+        assertFalse(request(HASH_B, 0).contains("failure reason"));
+        assertEquals(1, tracker.connections.get());
+        assertEquals(2, tracker.received.size());
+        assertEquals(HASH_A, tracker.received.get(0).get("info_hash"));
+        assertEquals(HASH_B, tracker.received.get(1).get("info_hash"));
+    }
+
+    @Test @Timeout(20)
+    void fakeHostProducesWebTorrentOffersAndReceivesAnswers() throws Exception {
+        assertFalse(request(HASH_A, 1).contains("failure reason"));
+        assertEquals(1, host.offersRequested.get());
+        assertEquals(1, tracker.received.size());
+        JSONArray offers = (JSONArray) tracker.received.get(0).get("offers");
+        assertNotNull(offers);
+        assertEquals(1, offers.size());
+        assertEquals(OFFER_ID, ((JSONObject) offers.get(0)).get("offer_id"));
+        await(() -> host.answersReceived.get() == 1);
+    }
+
+    @Test @Timeout(20)
+    void reconnectReplaysRegistrationsWithoutGeneratingExtraOffers() throws Exception {
+        assertFalse(request(HASH_A, 1).contains("failure reason"));
+        assertFalse(request(HASH_B, 1).contains("failure reason"));
+        assertEquals(2, host.offersRequested.get());
+        tracker.closeConnections();
+        await(() -> tracker.connectionsClosed.get() >= 1);
+        assertFalse(request(HASH_A, 0).contains("failure reason"));
+        await(() -> tracker.connections.get() == 2 && tracker.received.size() >= 4);
+        List<JSONObject> replayed = new ArrayList<>(tracker.received.subList(2, tracker.received.size()));
+        assertTrue(replayed.stream().anyMatch(m -> HASH_A.equals(m.get("info_hash"))));
+        assertTrue(replayed.stream().anyMatch(m -> HASH_B.equals(m.get("info_hash"))));
+        assertEquals(2, host.offersRequested.get(), "Reconnect must not create new WebRTC offers");
+        assertTrue(replayed.stream().allMatch(m -> ((JSONArray)m.get("offers")).isEmpty()));
+    }
+
+    @Test @Timeout(20)
+    void trackerFailureUnblocksAndIsReturnedToCaller() throws Exception {
+        tracker.reject = true;
+        String response = request(HASH_A, 0);
+        assertTrue(response.contains("failure reason"), response);
+        assertTrue(response.contains("simulated rejection"), response);
+        assertEquals(1, tracker.received.size());
+    }
+
+    @Test @Timeout(20)
+    void concurrentAnnouncesShareAConnection() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<String> first = pool.submit(() -> { start.await(); return request(HASH_A, 0); });
+            Future<String> second = pool.submit(() -> { start.await(); return request(HASH_B, 0); });
+            start.countDown();
+            assertFalse(first.get(12, TimeUnit.SECONDS).contains("failure reason"));
+            assertFalse(second.get(12, TimeUnit.SECONDS).contains("failure reason"));
+            assertEquals(1, tracker.connections.get(), "Only one concurrent WS handshake expected");
+            assertEquals(2, tracker.received.size());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @ServerEndpoint("/tracker")
+    public static class MockEndpoint {
+        static final AtomicReference<MockTracker> current = new AtomicReference<>();
+
+        @OnOpen
+        public void open(Session session) {
+            MockTracker t = current.get();
+            if (t != null) {
+                t.connections.incrementAndGet();
+                t.sessions.add(session);
+            }
+        }
+
+        @OnClose
+        public void close(Session session) {
+            MockTracker t = current.get();
+            if (t != null) {
+                t.sessions.remove(session);
+                t.connectionsClosed.incrementAndGet();
+            }
+        }
+
+        @OnMessage
+        public void onMessage(String message, Session session) throws Exception {
+            MockTracker t = current.get();
+            JSONObject request = (JSONObject) new JSONParser().parse(message);
+            t.received.add(request);
+            String hash = (String) request.get("info_hash");
+            JSONObject response = new JSONObject();
+            response.put("info_hash", hash);
+            if (t.reject) {
+                response.put("failure reason", "simulated rejection");
+            } else {
+                response.put("complete", 1);
+                response.put("incomplete", 0);
+                response.put("interval", 125);
+            }
+            session.getBasicRemote().sendText(response.toJSONString());
+            JSONArray offers = (JSONArray) request.get("offers");
+            if (!t.reject && offers != null && !offers.isEmpty()) {
+                JSONObject first = (JSONObject) offers.get(0);
+                JSONObject answer = new JSONObject();
+                answer.put("type", "answer");
+                answer.put("sdp", "v=0\\r\\n");
+                JSONObject envelope = new JSONObject();
+                envelope.put("answer", answer);
+                envelope.put("info_hash", hash);
+                envelope.put("offer_id", first.get("offer_id"));
+                session.getBasicRemote().sendText(envelope.toJSONString());
+            }
+        }
+    }
+
+    private static class MockTracker {
+        final AtomicInteger connections = new AtomicInteger();
+        final AtomicInteger connectionsClosed = new AtomicInteger();
+        final List<JSONObject> received = new CopyOnWriteArrayList<>();
+        final Set<Session> sessions = ConcurrentHashMap.newKeySet();
+        volatile boolean reject;
+
+        void closeConnections() throws Exception {
+            for (Session session : new ArrayList<>(sessions)) session.close();
+        }
+    }
+
+    private static class MockHost implements TrackerProxy.Listener {
+        final AtomicInteger offersRequested = new AtomicInteger();
+        final AtomicInteger answersReceived = new AtomicInteger();
+
+        @Override
+        public void getOffer(byte[] hash, long timeout, WebRTCProvider.OfferListener listener) {
+            offersRequested.incrementAndGet();
+            listener.gotOffer(new WebRTCProvider.Offer() {
+                @Override public String getOfferID() { return OFFER_ID; }
+                @Override public String getSDP() { return "v=0\\r\\n"; }
+            });
+        }
+
+        @Override
+        public void gotAnswer(byte[] hash, String offerId, String sdp) {
+            if (OFFER_ID.equals(offerId)) answersReceived.incrementAndGet();
+        }
+
+        @Override
+        public void gotOffer(byte[] hash, String offerId, String sdp,
+                WebRTCProvider.AnswerListener listener) {
+            listener.gotAnswer(new WebRTCProvider.Answer() {
+                @Override public String getOfferID() { return offerId; }
+                @Override public String getSDP() { return "v=0\\r\\n"; }
+            });
+        }
+    }
+}

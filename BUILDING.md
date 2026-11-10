@@ -19,3 +19,49 @@ No native WebRTC runtime is invoked by the unit tests; they should use local Web
 ## WebRTC API compatibility
 
 The plugin calls `RTCStats.getMembers()`, present in `webrtc-java` 0.10.0 and removed by 0.11.0 (renamed to `getAttributes()`). The build pins 0.10.0 to retain the original implementation and avoid runtime API linkage mismatches. Check that the installed plugin's WebRTC native runtime/JAR version agrees before deployment; CI verifies Java compilation only, not the running BiglyBT process.
+
+## Offline tracker integration tests
+
+CI now runs `TrackerProxyIntegrationTest` on both Linux and Windows. It uses a
+small fake host implementing only `TrackerProxy.Listener` plus a local Tyrus
+WebSocket tracker on loopback. It verifies:
+
+- A successful tracker announce and connection reuse.
+- Offer JSON generation and answer callback dispatch via a fake WebRTC provider.
+- Reconnect after a deliberate server close, with re-announcements and **no newly generated offers**.
+- Tracker failure response propagation.
+- Concurrent announces sharing a single tracker WebSocket connection.
+
+The fixture does **not** mock all BiglyBT APIs, test native WebRTC ICE/data
+channels, or launch the full BiglyBT application. `BiglyBTHostApiSmokeTest`
+class-loads the plugin against the real BiglyBT 4.1.0.0 API JAR in CI; a
+separate manual BiglyBT application smoke test remains required.
+
+## Overnight soak diagnostics
+
+The integration branch writes structured entries via the plugin's existing
+**WebTorrent** logging channel, prefixed `[soak][proxy]` or
+`[soak][hosted-tracker]`. Look for:
+
+- `connect-start`, `socket-open`, `connection-registered`, and
+  `connection-reused-after-gate` for connection lifecycle and serialized creation.
+- `heartbeat-pong`, `heartbeat-pong-timeout`,
+  `heartbeat-send-failed` and `heartbeat-socket-closed` for liveness handling.
+- `send-ok`, `bounded-send-failed`, `announce-timeout`, and
+  `announce-rejected` for write limits, stale responses and failure propagation.
+- `announces-restored` with a replay count and `offersRegenerated=false`.
+- `offers-generated` for offer generation counts (first three batches and each
+  hundredth batch).
+- `session-cleanup`, `proxy-shutdown`, `shutdown-start`,
+  and `shutdown-complete` for resource cleanup and waiters released.
+
+Common sends and pong events are sampled to limit noise. No SDP bodies,
+peer IDs, torrent hashes, tracker URL query parameters, usernames or passwords
+are included in the new messages. If the host logs don't contain
+`[soak]` events, check whether the installed JAR was built from the updated
+integration branch.
+
+For a manual soak, install the generated `target/azwebtorrent.jar` in a
+**real** BiglyBT 4.1.0.0 Windows setup and capture the WebTorrent plugin log
+throughout a torrent announce/reconnect cycle. CI's host API smoke test does
+not prove native WebRTC functionality.
