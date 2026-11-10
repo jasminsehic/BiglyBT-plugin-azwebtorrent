@@ -37,7 +37,20 @@ jobs:
             -DgroupId=com.biglybt -DartifactId=biglybt-host \
             -Dversion=4.1.0.0 -Dpackaging=jar -DgeneratePom=true
       - name: Compile, test, and package plugin
-        run: mvn --batch-mode --no-transfer-progress clean verify
+        shell: bash
+        run: |
+          set -o pipefail
+          mvn --batch-mode --no-transfer-progress clean verify 2>&1 | tee build.log
+      - name: Reject JVM exceptions printed outside test results
+        shell: bash
+        run: |
+          # Some host APIs log failures from background or native initialization
+          # without propagating them to JUnit. An otherwise green build must not
+          # silently accept these stack traces.
+          if grep -Enm1 '(^|[[:space:]])((java|javax|jakarta)\\.[[:alnum:]_.$]*(Exception|Error):|Exception in thread|This is BAD - fix me!)' build.log; then
+            echo "::error::Unexpected JVM exception in Maven output"
+            exit 1
+          fi
       - name: Verify plugin JAR entries
         shell: bash
         run: |
