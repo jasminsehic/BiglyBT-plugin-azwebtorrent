@@ -13,7 +13,7 @@ class TrackerProxyTimeoutTest {
     private static Object session() throws Exception {
         TrackerProxy proxy = new TrackerProxy(null, null);
         Class<?> cls = Class.forName(TrackerProxy.class.getName() + "$ClientSession");
-        Constructor<?> ctor = cls.getDeclaredConstructor(TrackerProxy.class, jakarta.websocket.Session.class);
+        Constructor<?> ctor = cls.getDeclaredConstructor(TrackerProxy.class, javax.websocket.Session.class);
         ctor.setAccessible(true);
         return ctor.newInstance(proxy, null);
     }

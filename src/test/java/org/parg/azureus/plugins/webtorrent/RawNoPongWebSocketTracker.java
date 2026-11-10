@@ -76,7 +76,7 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
                 bytes.write(next);
                 if (endsWithDoubleNewline(bytes)) break;
             }
-            String headers = bytes.toString(StandardCharsets.ISO_8859_1);
+            String headers = new String(bytes.toByteArray(), StandardCharsets.ISO_8859_1);
             String key = null;
             for (String line : headers.split("\r\n")) {
                 if (line.toLowerCase(java.util.Locale.ROOT).startsWith("sec-websocket-key:")) {

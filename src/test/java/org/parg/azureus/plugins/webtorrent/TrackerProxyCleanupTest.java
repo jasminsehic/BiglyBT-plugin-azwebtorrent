@@ -5,7 +5,7 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import jakarta.websocket.Session;
+import javax.websocket.Session;
 import org.junit.jupiter.api.Test;
 
 class TrackerProxyCleanupTest {

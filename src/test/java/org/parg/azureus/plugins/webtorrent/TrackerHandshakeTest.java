@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
-import jakarta.websocket.Session;
+import javax.websocket.Session;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 

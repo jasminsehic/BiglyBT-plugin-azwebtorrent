@@ -1,6 +1,6 @@
 package org.parg.azureus.plugins.webtorrent;
 
-import jakarta.websocket.Session;
+import javax.websocket.Session;
 import java.io.IOException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;

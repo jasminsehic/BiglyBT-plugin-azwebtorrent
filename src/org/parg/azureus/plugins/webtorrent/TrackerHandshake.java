@@ -6,7 +6,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import jakarta.websocket.Session;
+import javax.websocket.Session;
 
 /** Bounds the connection attempt and closes sessions opened after cancellation. */
 final class TrackerHandshake {
