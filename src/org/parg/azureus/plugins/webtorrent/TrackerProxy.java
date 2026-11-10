@@ -87,6 +87,10 @@ TrackerProxy
 	private final TrackerAnnounceRegistry announce_registry = new TrackerAnnounceRegistry();
 	private static final long PING_INTERVAL_MS = 60_000;
 	private static final long PONG_TIMEOUT_MS = 30_000;
+    private final long pingIntervalMs;
+    private final long pongTimeoutMs;
+    private final long writerTimeoutMs;
+    private final int minimumReadTimeoutMs;
 	private final ScheduledExecutorService ping_executor = Executors.newScheduledThreadPool(2, task -> {
 		Thread thread = new Thread(task, "azwebtorrent-tracker-ping");
 		thread.setDaemon(true);
@@ -100,11 +104,22 @@ TrackerProxy
 	TrackerProxy(
 		WebTorrentPlugin	_plugin,
 		Listener			_listener )
-	{
-		plugin		= _plugin;
-		listener	= _listener;
-	}
-	
+    {
+        this(_plugin, _listener, PING_INTERVAL_MS, PONG_TIMEOUT_MS, 30_000, 30_000);
+    }
+
+    // Package-private timing control for deterministic local integration tests.
+    TrackerProxy(WebTorrentPlugin _plugin, Listener _listener,
+            long pingIntervalMs, long pongTimeoutMs,
+            long writerTimeoutMs, int minimumReadTimeoutMs) {
+        plugin = _plugin;
+        listener = _listener;
+        this.pingIntervalMs = pingIntervalMs;
+        this.pongTimeoutMs = pongTimeoutMs;
+        this.writerTimeoutMs = writerTimeoutMs;
+        this.minimumReadTimeoutMs = minimumReadTimeoutMs;
+    }
+
 	@Override
 	public void 
 	handleRequest(
@@ -177,7 +192,7 @@ TrackerProxy
 
 		  	int	read_timeout	= Integer.parseInt( read_timeout_str );
 		  	
-		  	read_timeout = Math.max( read_timeout, 30*1000 );
+		  	read_timeout = Math.max( read_timeout, minimumReadTimeoutMs );
 		  	
 			boolean	is_stop = event != null && event.equals( "stopped" );
 			
@@ -850,7 +865,7 @@ TrackerProxy
     	ClientSession(Session _session, String _ws_url) {
     		session = _session;
     		ws_url = _ws_url;
-    		writer = new TrackerSocketWriter(_session, 30_000);
+    		writer = new TrackerSocketWriter(_session, writerTimeoutMs);
     	}
 
     	private void startHeartbeat() {
@@ -864,18 +879,18 @@ TrackerProxy
     				return;
     			}
     			ping_executor.schedule(() -> {
-    				if (ping_state.isExpired(SystemTime.getMonotonousTime(), PONG_TIMEOUT_MS)) {
-                        diagnostic("heartbeat-pong-timeout", ws_url, "timeoutMs=" + PONG_TIMEOUT_MS);
+    				if (ping_state.isExpired(SystemTime.getMonotonousTime(), pongTimeoutMs)) {
+                        diagnostic("heartbeat-pong-timeout", ws_url, "timeoutMs=" + pongTimeoutMs);
                         invalidate();
     				}
-    			}, PONG_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    			}, pongTimeoutMs, TimeUnit.MILLISECONDS);
     			try {
     				session.getBasicRemote().sendPing(ByteBuffer.allocate(0));
                 } catch (Exception e) {
                     diagnostic("heartbeat-send-failed", ws_url, "type=" + e.getClass().getSimpleName());
                     invalidate();
     			}
-    		}, PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    		}, pingIntervalMs, pingIntervalMs, TimeUnit.MILLISECONDS);
     	}
 
     	private void pongReceived() {

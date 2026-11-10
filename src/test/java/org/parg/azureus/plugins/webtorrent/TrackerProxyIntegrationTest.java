@@ -4,6 +4,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Proxy;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import jakarta.websocket.RemoteEndpoint;
 import java.util.Map;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
@@ -80,8 +85,12 @@ class TrackerProxyIntegrationTest {
     }
 
     private String request(String hash, int numwant) throws Exception {
+        return requestTo("ws://127.0.0.1:" + port + "/tracker", hash, numwant);
+    }
+
+    private String requestTo(String trackerUrl, String hash, int numwant) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        String url = "ws://127.0.0.1:" + port + "/tracker"
+        String url = trackerUrl
             + "?numwant=" + numwant + "&uploaded=0&downloaded=0&left=1"
             + "&event=started&info_hash=" + hash + "&peer_id=" + PEER_ID;
         proxy.handleRequest(url, out);
@@ -178,6 +187,116 @@ class TrackerProxyIntegrationTest {
         }
     }
 
+    private void useFastFailureTimeouts() {
+        proxy.destroy();
+        System.setProperty("sun.net.client.defaultReadTimeout", "6000");
+        proxy = new TrackerProxy(null, host, 100, 250, 120, 6000);
+    }
+
+    @Test @Timeout(20)
+    void silentAnnounceTimesOutAndRecoversOnFreshConnection() throws Exception {
+        useFastFailureTimeouts();
+        tracker.silent = true;
+        String failed = request(HASH_A, 0);
+        assertTrue(failed.contains("failure reason"), failed);
+        assertTrue(failed.contains("timed out"), failed);
+        Map<?, ?> sessions = clientSessionMap();
+        synchronized (sessions) {
+            assertTrue(sessions.isEmpty(), "Timed-out session must be evicted");
+        }
+        tracker.silent = false;
+        assertFalse(request(HASH_A, 0).contains("failure reason"));
+        assertEquals(2, tracker.connections.get(), "Retry must create a new connection");
+    }
+
+    @Test @Timeout(20)
+    void unansweredPingInvalidatesOpenSocketAndAllowsReconnect() throws Exception {
+        useFastFailureTimeouts();
+        try (RawNoPongWebSocketTracker raw = new RawNoPongWebSocketTracker()) {
+            String url = raw.url();
+            assertFalse(requestTo(url, HASH_A, 0).contains("failure reason"));
+            await(() -> raw.pings.get() >= 1);
+            Map<?, ?> sessions = clientSessionMap();
+            await(() -> { synchronized (sessions) { return sessions.isEmpty(); } });
+            await(() -> raw.closed.get() >= 1);
+            assertFalse(requestTo(url, HASH_B, 0).contains("failure reason"));
+            assertEquals(2, raw.connections.get(), "Next announce must reconnect");
+        }
+    }
+
+    @Test @Timeout(20)
+    void blockedAsyncWriteReturnsFailureThenNextAnnounceRecovers() throws Exception {
+        useFastFailureTimeouts();
+        String url = "ws://127.0.0.1:" + port + "/tracker";
+        AtomicBoolean closed = new AtomicBoolean();
+        CompletableFuture<Void> blocked = new CompletableFuture<>();
+        RemoteEndpoint.Async async = (RemoteEndpoint.Async) Proxy.newProxyInstance(
+            getClass().getClassLoader(), new Class<?>[]{RemoteEndpoint.Async.class},
+            (p, method, args) -> method.getName().equals("sendText") ? blocked : null);
+        Session socket = (Session) Proxy.newProxyInstance(
+            getClass().getClassLoader(), new Class<?>[]{Session.class},
+            (p, method, args) -> {
+                if (method.getName().equals("getAsyncRemote")) return async;
+                if (method.getName().equals("isOpen")) return !closed.get();
+                if (method.getName().equals("close")) { closed.set(true); return null; }
+                return null;
+            });
+        Class<?> clientSession = Class.forName(TrackerProxy.class.getName() + "$ClientSession");
+        Constructor<?> constructor = clientSession.getDeclaredConstructor(
+            TrackerProxy.class, Session.class, String.class);
+        constructor.setAccessible(true);
+        Object stalled = constructor.newInstance(proxy, socket, url);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> sessions = (Map<String, Object>) clientSessionMap();
+        synchronized (sessions) { sessions.put(url, stalled); }
+
+        String failure = request(HASH_A, 0);
+        assertTrue(failure.contains("failure reason"), failure);
+        assertTrue(failure.contains("send timed out"), failure);
+        assertTrue(closed.get(), "Timed-out write must close socket");
+        assertTrue(blocked.isCancelled(), "Pending write must be cancelled");
+        assertFalse(request(HASH_B, 0).contains("failure reason"),
+            "Subsequent announce must not reuse the stalled socket");
+    }
+
+    @Test @Timeout(30)
+    void wssHandshakeAgainstNonTlsTrackerFailsWithoutHanging() throws Exception {
+        useFastFailureTimeouts();
+        String failure = requestTo("wss://127.0.0.1:" + port + "/tracker", HASH_A, 0);
+        assertTrue(failure.contains("failure reason"), failure);
+        Map<?, ?> sessions = clientSessionMap();
+        synchronized (sessions) {
+            assertTrue(sessions.isEmpty(), "TLS handshake failure must not register a session");
+        }
+        assertFalse(request(HASH_B, 0).contains("failure reason"),
+            "An unrelated plain WebSocket tracker must still work");
+    }
+
+    @Test @Timeout(20)
+    void concurrentDisconnectAndShutdownReleasesWaitingAnnounces() throws Exception {
+        useFastFailureTimeouts();
+        tracker.silent = true;
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        try {
+            Future<String> first = pool.submit(() -> request(HASH_A, 0));
+            await(() -> tracker.received.size() == 1);
+            Future<String> second = pool.submit(() -> request(HASH_B, 0));
+            await(() -> tracker.received.size() >= 2);
+            Future<?> close = pool.submit(() -> { tracker.closeConnections(); return null; });
+            Future<?> shutdown = pool.submit(() -> { proxy.destroy(); return null; });
+            close.get(5, TimeUnit.SECONDS);
+            shutdown.get(5, TimeUnit.SECONDS);
+            assertTrue(first.get(5, TimeUnit.SECONDS).contains("failure reason"));
+            assertTrue(second.get(5, TimeUnit.SECONDS).contains("failure reason"));
+            Map<?, ?> sessions = clientSessionMap();
+            synchronized (sessions) {
+                assertTrue(sessions.isEmpty(), "Shutdown must clear every tracked socket");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     @ServerEndpoint("/tracker")
     public static class MockEndpoint {
         static final AtomicReference<MockTracker> current = new AtomicReference<>();
@@ -205,6 +324,7 @@ class TrackerProxyIntegrationTest {
             MockTracker t = current.get();
             JSONObject request = (JSONObject) new JSONParser().parse(new java.io.StringReader(message));
             t.received.add(request);
+            if (t.silent) return;
             String hash = (String) request.get("info_hash");
             JSONObject response = new JSONObject();
             response.put("info_hash", hash);
@@ -237,6 +357,7 @@ class TrackerProxyIntegrationTest {
         final List<JSONObject> received = new CopyOnWriteArrayList<>();
         final Set<Session> sessions = ConcurrentHashMap.newKeySet();
         volatile boolean reject;
+        volatile boolean silent;
 
         void closeConnections() throws Exception {
             for (Session session : new ArrayList<>(sessions)) session.close();
