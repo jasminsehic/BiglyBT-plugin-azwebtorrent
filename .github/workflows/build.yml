@@ -57,6 +57,38 @@ jobs:
         run: |
           jar tf target/azwebtorrent.jar | grep -Fx 'plugin.properties'
           jar tf target/azwebtorrent.jar | grep -Fx 'org/parg/azureus/plugins/webtorrent/TrackerProxy.class'
+      - name: Reject Java 9+ class files in installable JAR
+        shell: bash
+        run: |
+          python - <<'PY'
+          import struct
+          import sys
+          import zipfile
+
+          jar = "target/azwebtorrent.jar"
+          incompatible = []
+          checked = 0
+          with zipfile.ZipFile(jar) as archive:
+              for name in archive.namelist():
+                  if not name.endswith(".class"):
+                      continue
+                  # Module descriptors and multi-release classes are not loaded by Java 8.
+                  if name.endswith("/module-info.class") or name == "module-info.class" or name.startswith("META-INF/versions/"):
+                      continue
+                  data = archive.read(name)[:8]
+                  if len(data) != 8 or data[:4] != b"\\xca\\xfe\\xba\\xbe":
+                      incompatible.append((name, "invalid class header"))
+                      continue
+                  major = struct.unpack(">H", data[6:8])[0]
+                  checked += 1
+                  if major > 52:
+                      incompatible.append((name, "class version " + str(major)))
+          print("Checked {} installable Java classes against Java 8 (major 52)".format(checked))
+          for name, reason in incompatible[:30]:
+              print("Incompatible: {} ({})".format(name, reason), file=sys.stderr)
+          if incompatible:
+              sys.exit("Found {} Java 9+ or invalid class files".format(len(incompatible)))
+          PY
       - name: Verify Windows WebRTC native library is packaged
         if: runner.os == 'Windows'
         shell: bash
