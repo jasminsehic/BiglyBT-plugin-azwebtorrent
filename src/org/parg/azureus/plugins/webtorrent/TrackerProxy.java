@@ -390,6 +390,10 @@ TrackerProxy
                     diagnostic("runtime-context", ws_url,
                         WssRuntimeDiagnostics.classpath() + " routes="
                             + WssRuntimeDiagnostics.proxyTypes(new URI(ws_url)));
+                    // Direct only, without changing Java's global proxy settings.
+                    // Fail closed if BiglyBT configures an implicit outbound proxy.
+                    TrackerDirectRouting.requireDirect(new URI(ws_url));
+                    diagnostic("routing-verified", ws_url, "directOnly=true");
                     ClientManager client = ClientManager.createClient();
                     // The previous 10-second cap prematurely rejected slow WSS
                     // handshakes; reserve five seconds of the caller's read budget
