@@ -1,11 +1,13 @@
 package org.parg.azureus.plugins.webtorrent;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.DataInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.net.SocketException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -14,6 +16,7 @@ import java.util.Base64;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -29,6 +32,8 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
     final AtomicInteger closed = new AtomicInteger();
     private final ServerSocket listener;
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
+    private final Set<Thread> clientThreads = ConcurrentHashMap.newKeySet();
+    private final AtomicReference<Throwable> asyncFailure = new AtomicReference<>();
     private final Thread acceptThread;
     private volatile boolean running = true;
 
@@ -46,11 +51,15 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
             try {
                 Socket socket = listener.accept();
                 clients.add(socket);
-                Thread thread = new Thread(() -> serve(socket), "mock-raw-tracker-peer");
+                Thread thread = new Thread(() -> {
+                    try { serve(socket); }
+                    finally { clientThreads.remove(Thread.currentThread()); }
+                }, "mock-raw-tracker-peer");
                 thread.setDaemon(true);
+                clientThreads.add(thread);
                 thread.start();
             } catch (Exception e) {
-                if (running) throw new AssertionError("Raw test tracker accept failed", e);
+                if (running) asyncFailure.compareAndSet(null, e);
             }
         }
     }
@@ -125,8 +134,14 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
                     out.flush();
                 } else if (opcode == 8) return;
             }
-        } catch (Exception ignored) {
-            // EOF, timeout and connection reset are expected during failure testing.
+        } catch (EOFException expected) {
+            // An orderly peer disconnect can terminate a partially read frame.
+        } catch (SocketException e) {
+            // Our own close() shuts down sockets; an unexpected live socket error
+            // must still fail JUnit instead of disappearing on a worker thread.
+            if (running && !socket.isClosed()) asyncFailure.compareAndSet(null, e);
+        } catch (Throwable failure) {
+            asyncFailure.compareAndSet(null, failure);
         } finally {
             clients.remove(socket);
             closed.incrementAndGet();
@@ -140,10 +155,23 @@ final class RawNoPongWebSocketTracker implements AutoCloseable {
             && b[n - 2] == '\r' && b[n - 1] == '\n';
     }
 
+    void assertNoAsyncFailures() {
+        Throwable failure = asyncFailure.get();
+        if (failure != null)
+            throw new AssertionError("Unexpected raw WebSocket tracker worker exception", failure);
+    }
+
     @Override public void close() throws Exception {
         running = false;
-        listener.close();
-        for (Socket socket : new ArrayList<>(clients)) socket.close();
-        acceptThread.join(2000);
+        try {
+            listener.close();
+        } finally {
+            for (Socket socket : new ArrayList<>(clients)) socket.close();
+            acceptThread.join(2000);
+            for (Thread worker : new ArrayList<>(clientThreads)) worker.join(2000);
+            if (acceptThread.isAlive() || clientThreads.stream().anyMatch(Thread::isAlive))
+                throw new AssertionError("Raw WebSocket tracker worker did not terminate");
+            assertNoAsyncFailures();
+        }
     }
 }
