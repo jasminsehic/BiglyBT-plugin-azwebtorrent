@@ -44,10 +44,22 @@ $classPath = "$jar;$tests"
 
 Write-Host '--- Standalone Java 8 direct-only TLS/WebSocket probe ---'
 Write-Host 'This separate Java process bypasses outbound proxies without changing BiglyBT settings.'
+$failures = @()
 foreach ($uri in @('wss://tracker.openwebtorrent.com', 'wss://tracker.webtorrent.dev')) {
-    Write-Host "=== $uri ==="
-    & $javaExecutable -cp $classPath org.parg.azureus.plugins.webtorrent.DirectWssProbe $uri
-    if ($LASTEXITCODE -ne 0) { throw "Direct WSS probe failed for $uri" }
+    foreach ($ipv6First in @($false, $true)) {
+        $mode = if ($ipv6First) { 'IPv6-first' } else { 'Java default address order' }
+        Write-Host "=== $uri : $mode ==="
+        $javaOptions = @()
+        if ($ipv6First) { $javaOptions += '-Djava.net.preferIPv6Addresses=true' }
+        & $javaExecutable @javaOptions -cp $classPath org.parg.azureus.plugins.webtorrent.DirectWssProbe $uri
+        if ($LASTEXITCODE -ne 0) {
+            $failures += "$uri ($mode)"
+            Write-Warning "Probe reported a failure for $uri ($mode). Continuing comparison."
+        }
+    }
 }
 Write-Host "Build complete: $jar"
 Write-Host 'Do not overwrite the installed plugin until the probe results are reviewed.'
+if ($failures.Count -gt 0) {
+    throw "Direct WSS probe failures: $($failures -join ', ')"
+}
