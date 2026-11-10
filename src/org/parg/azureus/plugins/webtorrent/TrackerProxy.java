@@ -77,6 +77,8 @@ TrackerProxy
 	private Map<String,ClientSession>	client_sessions = new HashMap<String, ClientSession>();
 	private static final long PING_INTERVAL_MS = 60_000;
 	private static final long PONG_TIMEOUT_MS = 30_000;
+    private final long pingIntervalMs;
+    private final long pongTimeoutMs;
 	private final ScheduledExecutorService ping_executor =
 		Executors.newScheduledThreadPool( 2, task -> {
 			Thread thread = new Thread( task, "azwebtorrent-tracker-ping" );
@@ -91,11 +93,19 @@ TrackerProxy
 	TrackerProxy(
 		WebTorrentPlugin	_plugin,
 		Listener			_listener )
-	{
-		plugin		= _plugin;
-		listener	= _listener;
-	}
-	
+    {
+        this(_plugin, _listener, PING_INTERVAL_MS, PONG_TIMEOUT_MS);
+    }
+
+    // Timing override for deterministic watchdog integration tests.
+    TrackerProxy(WebTorrentPlugin plugin, Listener listener,
+            long pingIntervalMs, long pongTimeoutMs) {
+        this.plugin = plugin;
+        this.listener = listener;
+        this.pingIntervalMs = pingIntervalMs;
+        this.pongTimeoutMs = pongTimeoutMs;
+    }
+
 	@Override
 	public void 
 	handleRequest(
@@ -744,16 +754,16 @@ TrackerProxy
     				return;
     			}
     			ping_executor.schedule(() -> {
-    				if (ping_state.isExpired(SystemTime.getMonotonousTime(), PONG_TIMEOUT_MS)) {
+    				if (ping_state.isExpired(SystemTime.getMonotonousTime(), pongTimeoutMs)) {
     					invalidate();
     				}
-    			}, PONG_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    			}, pongTimeoutMs, TimeUnit.MILLISECONDS);
     			try {
     				session.getBasicRemote().sendPing(ByteBuffer.allocate(0));
     			} catch (Exception error) {
     				invalidate();
     			}
-    		}, PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    		}, pingIntervalMs, pingIntervalMs, TimeUnit.MILLISECONDS);
     	}
 
     	private void pongReceived() {
