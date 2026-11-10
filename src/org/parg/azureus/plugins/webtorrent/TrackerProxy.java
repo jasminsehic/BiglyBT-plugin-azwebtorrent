@@ -24,6 +24,12 @@ package org.parg.azureus.plugins.webtorrent;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import jakarta.websocket.PongMessage;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.util.ArrayList;
@@ -70,6 +76,15 @@ TrackerProxy
 	private final Listener				listener;
 	
 	private Map<String,ClientSession>	client_sessions = new HashMap<String, ClientSession>();
+	private final TrackerConnectionGate connection_gate = new TrackerConnectionGate();
+	private final TrackerAnnounceRegistry announce_registry = new TrackerAnnounceRegistry();
+	private static final long PING_INTERVAL_MS = 60_000;
+	private static final long PONG_TIMEOUT_MS = 30_000;
+	private final ScheduledExecutorService ping_executor = Executors.newScheduledThreadPool(2, task -> {
+		Thread thread = new Thread(task, "azwebtorrent-tracker-ping");
+		thread.setDaemon(true);
+		return thread;
+	});
 
 	private ByteArrayHashMap<byte[]>	hash_to_peer_id_map 		= new ByteArrayHashMap<>();
 	private ByteArrayHashMap<byte[]>	hash_to_scrape_peer_id_map 	= new ByteArrayHashMap<>();
@@ -282,6 +297,13 @@ TrackerProxy
 	        			(scrape?"":( ",\"offers\":[" + offer_str + "]" )) +
 	        			"}";
 	        		        			
+	        	if (!scrape) {
+	        		if (is_stop) {
+	        			announce_registry.remove(ws_url, info_hash);
+	        		} else {
+	        			announce_registry.register(ws_url, info_hash, announce);
+	        		}
+	        	}
 	        	trace( "sending: " + announce );
 	        	
 	        	ClientSession	client_session = null;
@@ -306,6 +328,17 @@ TrackerProxy
 					
 				}else{
 					
+		            // Avoid duplicate handshakes when torrents share a tracker.
+		            synchronized (connection_gate.lockFor(ws_url)) {
+		            	synchronized (client_sessions) {
+		            		ClientSession other = client_sessions.get(ws_url);
+		            		if (other != null && other.isOpen()) {
+		            			client_session = other;
+		            		}
+		            	}
+		            	if (client_session != null) {
+		            		client_session.send(announce);
+		            	} else {
 		            ClientManager client = ClientManager.createClient();
 		            
 		            if ( ws_url.toLowerCase( Locale.US ).startsWith( "wss")){
@@ -335,6 +368,17 @@ TrackerProxy
 				                {
 				                    try{
 				                    	
+				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
+				                            @Override
+				                            public void onMessage(PongMessage pong) {
+				                                synchronized (client_sessions) {
+				                                    ClientSession current = client_sessions.get(ws_url);
+				                                    if (current != null && current.getSession() == session) {
+				                                        current.pongReceived();
+				                                    }
+				                                }
+				                            }
+				                        });
 				                        session.addMessageHandler(new MessageHandler.Whole<String>() {
 	
 				                            @Override
@@ -425,7 +469,14 @@ TrackerProxy
 																		trace( answer_str );
 																		
 																		try{
-																			session.getBasicRemote().sendText( answer_str );
+																			ClientSession active;
+												synchronized (client_sessions) {
+													active = client_sessions.get(ws_url);
+												}
+												if (active == null || active.getSession() != session) {
+													throw new IOException("WebSocket tracker session was replaced");
+												}
+												active.send(answer_str);
 																			
 																			trace( "    answer sent" );
 																			
@@ -505,9 +556,9 @@ TrackerProxy
 				                      		
 				                        trace( "announce: new connection to " + ws_url + announce );
 				                        
-				                        session.getBasicRemote().sendText( announce );
+				                        // Initial announce is sent after this session is registered below.
 				                        
-				                    }catch( IOException e ){
+				                    }catch( Exception e ){
 				                    	
 				                    	 synchronized( client_sessions ){
 				                    		 
@@ -554,7 +605,7 @@ TrackerProxy
 				                }
 				            }, cec, new URI( ws_url ));
 	            
-		            client_session = new ClientSession( session );
+		            client_session = new ClientSession( session, ws_url );
 		            
 		            synchronized( client_sessions ){
 		            	
@@ -570,12 +621,28 @@ TrackerProxy
 		            		}
 		            	}
 		            }
-				}   
+		            client_session.startHeartbeat();
+		            client_session.send(announce);
+		            // Restore previously registered torrents without creating new offers.
+		            for (String refresh : announce_registry.refreshExcept(ws_url,
+		            	(!scrape && !is_stop) ? info_hash : null)) {
+		            	client_session.send(refresh);
+		            }
+		            }
+		            }
+				}
 				
 				Map reply = client_session.waitForAnnounce( info_hash, read_timeout - 5*1000 );
 				
 				if ( reply == null ){
-					throw( new Exception( "Timeout" ));
+					// Prevent a timed-out, apparently open socket from being reused.
+					boolean removed;
+					synchronized (client_sessions) {
+						removed = client_sessions.get(ws_url) == client_session;
+						if (removed) client_sessions.remove(ws_url);
+					}
+					if (removed) client_session.close();
+					throw new IOException("Tracker announce timed out");
 				}
 				if ( reply.containsKey("failure reason") ){
 					throw new IOException("Tracker rejected announce: " + reply.get("failure reason"));
@@ -687,6 +754,8 @@ TrackerProxy
 			 
 			 client_sessions.clear();
 		 }
+		 announce_registry.clear();
+		 ping_executor.shutdownNow();
 	}
     
     public interface
@@ -721,14 +790,58 @@ TrackerProxy
     {
     	private Session		session;
     	private boolean terminated;
+    	private final String ws_url;
+    	private final TrackerPingState ping_state = new TrackerPingState();
+    	private ScheduledFuture<?> ping_task;
+    	private final TrackerSocketWriter writer;
     	
     	private ByteArrayHashMap<AnnounceData>	announce_map = new ByteArrayHashMap<>();
     	    	
     	protected
-    	ClientSession(
-    		Session		_session )
-    	{
-    		session	= _session;
+    	ClientSession(Session _session) {
+    		this(_session, null);
+    	}
+
+    	protected
+    	ClientSession(Session _session, String _ws_url) {
+    		session = _session;
+    		ws_url = _ws_url;
+    		writer = new TrackerSocketWriter(_session, 30_000);
+    	}
+
+    	private void startHeartbeat() {
+    		ping_task = ping_executor.scheduleAtFixedRate(() -> {
+    			if (!session.isOpen()) {
+    				invalidate();
+    				return;
+    			}
+    			if (!ping_state.startPing(SystemTime.getMonotonousTime())) {
+    				return;
+    			}
+    			ping_executor.schedule(() -> {
+    				if (ping_state.isExpired(SystemTime.getMonotonousTime(), PONG_TIMEOUT_MS)) {
+    					invalidate();
+    				}
+    			}, PONG_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    			try {
+    				session.getBasicRemote().sendPing(ByteBuffer.allocate(0));
+    			} catch (Exception e) {
+    				invalidate();
+    			}
+    		}, PING_INTERVAL_MS, PING_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    	}
+
+    	private void pongReceived() {
+    		ping_state.pong();
+    	}
+
+    	private void invalidate() {
+    		synchronized (client_sessions) {
+    			if (client_sessions.get(ws_url) == this) {
+    				client_sessions.remove(ws_url);
+    			}
+    		}
+    		close();
     	}
     	
     	private void
@@ -737,7 +850,7 @@ TrackerProxy
     		
     		throws Exception
     	{
-    		session.getBasicRemote().sendText( str );
+    		writer.send(str);
     	}
     	
     	private Session
@@ -825,7 +938,9 @@ TrackerProxy
     			sem = ad.announce_sem;
     		}
     		
-    		sem.reserve( timeout );
+    		if (!sem.reserve(timeout)) {
+    			return null;
+    		}
     		synchronized( this ){
     			return( terminated ? null : ad.last_announce );
     		}
@@ -834,6 +949,9 @@ TrackerProxy
     	private void
     	close()
     	{
+    		if (ping_task != null) {
+    			ping_task.cancel(false);
+    		}
     		synchronized( this ){
     			terminated = true;
     			for ( AnnounceData ad: announce_map.values() ){
