@@ -62,7 +62,7 @@
         <configuration>
           <!-- The BiglyBT test host installs a SecurityManager that blocks the
                test runner from exiting; permit exit only in the test JVM. -->
-          <argLine>-Dazureus.security.manager.permitexit=1</argLine>
+          <argLine>-Dazureus.security.manager.permitexit=1 -Dazureus.platform.manager.disable=true</argLine>
         </configuration>
       </plugin>
       <plugin>
