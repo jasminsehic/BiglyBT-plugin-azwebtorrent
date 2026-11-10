@@ -69,6 +69,7 @@ TrackerProxy
 	private final Listener				listener;
 	
 	private Map<String,ClientSession>	client_sessions = new HashMap<String, ClientSession>();
+	private final TrackerAnnounceRegistry announce_registry = new TrackerAnnounceRegistry();
 
 	private ByteArrayHashMap<byte[]>	hash_to_peer_id_map 		= new ByteArrayHashMap<>();
 	private ByteArrayHashMap<byte[]>	hash_to_scrape_peer_id_map 	= new ByteArrayHashMap<>();
@@ -281,6 +282,13 @@ TrackerProxy
 	        			(scrape?"":( ",\"offers\":[" + offer_str + "]" )) +
 	        			"}";
 	        		        			
+	        	if ( !scrape ){
+	        		if ( is_stop ){
+	        			announce_registry.remove(ws_url, info_hash);
+	        		}else{
+	        			announce_registry.register(ws_url, info_hash, announce);
+	        		}
+	        	}
 	        	trace( "sending: " + announce );
 	        	
 	        	ClientSession	client_session = null;
@@ -544,6 +552,11 @@ TrackerProxy
 		            		}
 		            	}
 		            }
+		            // The old socket's registrations are gone; refresh other torrents on this socket.
+		            for ( String refresh: announce_registry.refreshExcept(
+		            	ws_url, (!scrape && !is_stop) ? info_hash : null )){
+		            	client_session.send(refresh);
+		            }
 				}   
 				
 				Map reply = client_session.waitForAnnounce( info_hash, read_timeout - 5*1000 );
@@ -659,6 +672,7 @@ TrackerProxy
 			 
 			 client_sessions.clear();
 		 }
+		 announce_registry.clear();
 	}
     
     public interface
