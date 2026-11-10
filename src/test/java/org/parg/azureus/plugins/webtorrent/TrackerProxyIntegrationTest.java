@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import jakarta.websocket.OnClose;
+import jakarta.websocket.OnError;
 import jakarta.websocket.OnMessage;
 import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
@@ -66,6 +67,7 @@ class TrackerProxyIntegrationTest {
             port = socket.getLocalPort();
         }
         tracker = new MockTracker();
+        MockEndpoint.orphanFailure.set(null);
         MockEndpoint.current.set(tracker);
         server = new Server("127.0.0.1", port, "/", null, MockEndpoint.class);
         server.start();
@@ -75,13 +77,24 @@ class TrackerProxyIntegrationTest {
 
     @AfterEach
     void stopServer() {
-        if (proxy != null) proxy.destroy();
-        if (server != null) server.stop();
-        MockEndpoint.current.set(null);
-        if (previousReadTimeout == null)
-            System.clearProperty("sun.net.client.defaultReadTimeout");
-        else
-            System.setProperty("sun.net.client.defaultReadTimeout", previousReadTimeout);
+        try {
+            if (proxy != null) proxy.destroy();
+        } finally {
+            try {
+                if (server != null) server.stop();
+            } finally {
+                MockEndpoint.current.set(null);
+                if (previousReadTimeout == null)
+                    System.clearProperty("sun.net.client.defaultReadTimeout");
+                else
+                    System.setProperty("sun.net.client.defaultReadTimeout", previousReadTimeout);
+            }
+        }
+        // WebSocket callback exceptions run on Tyrus threads, not the JUnit test thread.
+        // Propagate the first unexpected failure so Surefire returns a failed build.
+        if (tracker != null) tracker.assertNoAsyncFailures();
+        Throwable orphan = MockEndpoint.orphanFailure.get();
+        if (orphan != null) throw new AssertionError("Unbound WebSocket callback failed", orphan);
     }
 
     private String request(String hash, int numwant) throws Exception {
@@ -297,56 +310,112 @@ class TrackerProxyIntegrationTest {
         }
     }
 
+    @Test @Timeout(20)
+    void existingWebSocketSessionUsesItsOwnTrackerAfterSharedReferenceCleared() throws Exception {
+        assertFalse(request(HASH_A, 0).contains("failure reason"));
+        MockEndpoint.current.set(null);
+        assertFalse(request(HASH_B, 0).contains("failure reason"));
+        tracker.closeConnections();
+        await(() -> tracker.connectionsClosed.get() == 1);
+        assertEquals(2, tracker.received.size());
+    }
+
+    @Test @Timeout(5)
+    void asynchronousCallbackExceptionCausesJUnitAssertionFailure() throws Exception {
+        MockTracker isolated = new MockTracker();
+        CompletableFuture.runAsync(() ->
+            isolated.recordAsyncFailure(new IllegalStateException("injected callback failure")))
+            .get(3, TimeUnit.SECONDS);
+        AssertionError failure = assertThrows(AssertionError.class, isolated::assertNoAsyncFailures);
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+    }
+
     @ServerEndpoint("/tracker")
     public static class MockEndpoint {
+        private static final String TRACKER_KEY = MockEndpoint.class.getName() + ".tracker";
         static final AtomicReference<MockTracker> current = new AtomicReference<>();
+        static final AtomicReference<Throwable> orphanFailure = new AtomicReference<>();
+
+        private static MockTracker trackerFor(Session session) {
+            Object bound = session.getUserProperties().get(TRACKER_KEY);
+            if (bound instanceof MockTracker) return (MockTracker) bound;
+            throw new IllegalStateException("WebSocket callback has no bound mock tracker");
+        }
 
         @OnOpen
         public void open(Session session) {
             MockTracker t = current.get();
-            if (t != null) {
-                t.connections.incrementAndGet();
-                t.sessions.add(session);
+            if (t == null) {
+                IllegalStateException failure = new IllegalStateException("WebSocket opened after fixture teardown");
+                orphanFailure.compareAndSet(null, failure);
+                throw failure;
             }
+            session.getUserProperties().put(TRACKER_KEY, t);
+            t.connections.incrementAndGet();
+            t.sessions.add(session);
         }
 
         @OnClose
         public void close(Session session) {
-            MockTracker t = current.get();
-            if (t != null) {
+            try {
+                MockTracker t = trackerFor(session);
                 t.sessions.remove(session);
                 t.connectionsClosed.incrementAndGet();
+            } catch (RuntimeException | Error failure) {
+                recordFailure(session, failure);
+                throw failure;
             }
+        }
+
+        @OnError
+        public void onError(Session session, Throwable failure) {
+            recordFailure(session, failure);
+        }
+
+        private static void recordFailure(Session session, Throwable failure) {
+            if (session != null) {
+                Object bound = session.getUserProperties().get(TRACKER_KEY);
+                if (bound instanceof MockTracker) {
+                    ((MockTracker) bound).recordAsyncFailure(failure);
+                    return;
+                }
+            }
+            orphanFailure.compareAndSet(null, failure);
         }
 
         @OnMessage
         public void onMessage(String message, Session session) throws Exception {
-            MockTracker t = current.get();
-            JSONObject request = (JSONObject) new JSONParser().parse(new java.io.StringReader(message));
-            t.received.add(request);
-            if (t.silent) return;
-            String hash = (String) request.get("info_hash");
-            JSONObject response = new JSONObject();
-            response.put("info_hash", hash);
-            if (t.reject) {
-                response.put("failure reason", "simulated rejection");
-            } else {
-                response.put("complete", 1);
-                response.put("incomplete", 0);
-                response.put("interval", 125);
-            }
-            session.getBasicRemote().sendText(com.biglybt.util.JSONUtils.encodeToJSON(response));
-            JSONArray offers = (JSONArray) request.get("offers");
-            if (!t.reject && offers != null && !offers.isEmpty()) {
-                JSONObject first = (JSONObject) offers.get(0);
-                JSONObject answer = new JSONObject();
-                answer.put("type", "answer");
-                answer.put("sdp", "v=0\\r\\n");
-                JSONObject envelope = new JSONObject();
-                envelope.put("answer", answer);
-                envelope.put("info_hash", hash);
-                envelope.put("offer_id", first.get("offer_id"));
-                session.getBasicRemote().sendText(com.biglybt.util.JSONUtils.encodeToJSON(envelope));
+            try {
+                MockTracker t = trackerFor(session);
+                JSONObject request = (JSONObject) new JSONParser().parse(new java.io.StringReader(message));
+                t.received.add(request);
+                if (t.silent) return;
+                String hash = (String) request.get("info_hash");
+                JSONObject response = new JSONObject();
+                response.put("info_hash", hash);
+                if (t.reject) {
+                    response.put("failure reason", "simulated rejection");
+                } else {
+                    response.put("complete", 1);
+                    response.put("incomplete", 0);
+                    response.put("interval", 125);
+                }
+                session.getBasicRemote().sendText(com.biglybt.util.JSONUtils.encodeToJSON(response));
+                JSONArray offers = (JSONArray) request.get("offers");
+                if (!t.reject && offers != null && !offers.isEmpty()) {
+                    JSONObject first = (JSONObject) offers.get(0);
+                    JSONObject answer = new JSONObject();
+                    answer.put("type", "answer");
+                    answer.put("sdp", "v=0\\r\\n");
+                    JSONObject envelope = new JSONObject();
+                    envelope.put("answer", answer);
+                    envelope.put("info_hash", hash);
+                    envelope.put("offer_id", first.get("offer_id"));
+                    session.getBasicRemote().sendText(com.biglybt.util.JSONUtils.encodeToJSON(envelope));
+                }
+            } catch (Exception | Error failure) {
+                recordFailure(session, failure);
+                throw failure;
             }
         }
     }
@@ -354,10 +423,20 @@ class TrackerProxyIntegrationTest {
     private static class MockTracker {
         final AtomicInteger connections = new AtomicInteger();
         final AtomicInteger connectionsClosed = new AtomicInteger();
+        final AtomicReference<Throwable> asyncFailure = new AtomicReference<>();
         final List<JSONObject> received = new CopyOnWriteArrayList<>();
         final Set<Session> sessions = ConcurrentHashMap.newKeySet();
         volatile boolean reject;
         volatile boolean silent;
+
+        void recordAsyncFailure(Throwable failure) {
+            asyncFailure.compareAndSet(null, failure);
+        }
+
+        void assertNoAsyncFailures() {
+            Throwable failure = asyncFailure.get();
+            if (failure != null) throw new AssertionError("Unexpected WebSocket callback exception", failure);
+        }
 
         void closeConnections() throws Exception {
             for (Session session : new ArrayList<>(sessions)) session.close();
