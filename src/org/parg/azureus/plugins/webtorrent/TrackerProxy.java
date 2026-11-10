@@ -396,8 +396,10 @@ TrackerProxy
 		            
 		            ClientEndpointConfig cec = ClientEndpointConfig.Builder.create().build();
 		            
-		            Session session = 
-		            	client.connectToServer(
+                    final java.util.concurrent.atomic.AtomicBoolean abandoned =
+                        new java.util.concurrent.atomic.AtomicBoolean();
+                    java.util.concurrent.Future<Session> connecting =
+                        client.asyncConnectToServer(
 		            		new Endpoint() 
 		            		{
 				                @Override
@@ -406,7 +408,11 @@ TrackerProxy
 				                	final Session 		session, 
 				                	EndpointConfig 		config) 
 				                {
-				                    try{
+                                    if (abandoned.get()) {
+                                        try { session.close(); } catch (Exception ignored) { }
+                                        return;
+                                    }
+                                    try{
 				                    	
 				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
 				                            @Override
@@ -656,8 +662,25 @@ TrackerProxy
 				                		 }
 				                	 }
 				                }
-				            }, cec, new URI( ws_url ));
-	            
+                            }, cec, new URI( ws_url ));
+                    Session session;
+                    try {
+                        session = connecting.get(handshakeTimeout, TimeUnit.MILLISECONDS);
+                    } catch (java.util.concurrent.TimeoutException e) {
+                        abandoned.set(true);
+                        connecting.cancel(true);
+                        diagnostic("handshake-timeout", ws_url, "timeoutMs=" + handshakeTimeout);
+                        throw new IOException("WebSocket tracker handshake timed out", e);
+                    } catch (java.util.concurrent.ExecutionException e) {
+                        abandoned.set(true);
+                        throw new IOException("WebSocket tracker handshake failed", e.getCause());
+                    } catch (InterruptedException e) {
+                        abandoned.set(true);
+                        connecting.cancel(true);
+                        Thread.currentThread().interrupt();
+                        throw new IOException("WebSocket tracker handshake interrupted", e);
+                    }
+
 		            client_session = new ClientSession( session, ws_url );
 		            
 		            ClientSession existing;
