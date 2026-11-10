@@ -63,7 +63,7 @@ class TrackerReconnectIntegrationTest {
             + "&event=started&info_hash=" + hash + "&peer_id=" + PEER_ID;
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         proxy.handleRequest(url, bytes);
-        return bytes.toString(StandardCharsets.ISO_8859_1);
+        return new String(bytes.toByteArray(), StandardCharsets.ISO_8859_1);
     }
 
     private static void until(java.util.function.BooleanSupplier ready) throws Exception {
@@ -93,7 +93,7 @@ class TrackerReconnectIntegrationTest {
         // HASH_A is the explicit triggering request and may legitimately have
         // event=started. The replayed HASH_B announce must be a silent refresh.
         JSONObject restored = replay.stream().filter(m -> HASH_B.equals(m.get("info_hash")))
-            .findFirst().orElseThrow();
+            .findFirst().orElseThrow(() -> new AssertionError("Replayed HASH_B announce missing"));
         assertNull(restored.get("event"), "Replayed announce must not start a new session");
         assertEquals(0, ((Number) restored.get("numwant")).intValue());
         assertTrue(((JSONArray) restored.get("offers")).isEmpty());
