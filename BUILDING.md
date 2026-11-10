@@ -18,6 +18,14 @@ The plugin targets Java 8 bytecode (class-file major version 52). CI builds and 
 
 No native WebRTC runtime is invoked by the unit tests; they should use local WebSocket test servers and mocked/test-only peers. The WebRTC native library is needed when actually using the plugin in BiglyBT.
 
+## Windows 11: local cross-build with JDK 21
+
+The existing JDK at `C:\Program Files\Eclipse Adoptium\jdk-21.0.13.9-hotspot` can compile this plugin for Java 8 because the Maven compiler is configured with `<maven.compiler.release>8</maven.compiler.release>`. Java 8 is needed to **run** the plugin, not necessarily to **compile** it. CI continues to run the 38 regression tests with Java 8; a second Windows job separately verifies that JDK 21 can compile the code to class-file major version 52.
+
+After checking out `experiment/wss-sync-java8`, run `pwsh -File tools/build-local-wss.ps1` with Apache Maven 3.9+ available on PATH. The script builds the **whole** shaded JAR, checks packaged bytecode, and runs a standalone direct-only WSS probe. To test using the same Java 8 runtime as BiglyBT, supply `-RuntimeJavaExe "C:\path\to\java8\bin\java.exe"`. If an embedded BiglyBT Java 8 runtime cannot be located, the script falls back to the build JDK 21 for diagnostics, clearly labelling that limitation.
+
+Do not copy just `TrackerProxy.class` into an older `azwebtorrent_1.5.5.jar` for this branch: it has new helper classes and a different (Java 8-compatible) Tyrus/Grizzly dependency line. Do not deploy the experiment until direct WSS tests on your Windows machine are understood.
+
 ## WebRTC API compatibility
 
 The plugin calls `RTCStats.getMembers()`, present in `webrtc-java` 0.10.0 and removed by 0.11.0 (renamed to `getAttributes()`). The build pins 0.10.0 to retain the original implementation and avoid runtime API linkage mismatches. Check that the installed plugin's WebRTC native runtime/JAR version agrees before deployment; CI verifies Java compilation only, not the running BiglyBT process.
