@@ -31,6 +31,20 @@ WebSocket tracker on loopback. It verifies:
 - Reconnect after a deliberate server close, with re-announcements and **no newly generated offers**.
 - Tracker failure response propagation.
 - Concurrent announces sharing a single tracker WebSocket connection.
+- A tracker that silently stops replying to announces: caller timeout, socket eviction,
+  and recovery on a fresh connection.
+- A raw RFC6455 test tracker that deliberately ignores pings: missed-pong detection,
+  session invalidation, and reconnection. Unlike Tyrus, it does not auto-respond.
+- A deliberately stalled asynchronous send using a mock WebSocket session: bounded
+  write failure, socket closure, and subsequent recovery with a real local tracker.
+- WSS handshake attempted against a plain-WS tracker: bounded TLS/upgrade failure
+  without retaining a session. This tests failure handling, not successful TLS.
+- Concurrent server disconnect and plugin shutdown while two announces wait:
+  both waiters return and tracker state is released.
+
+Fast failure tests inject shorter timing values into the package-private test
+constructor. Normal plugin instances retain the original announce, ping, pong,
+and write timeout defaults. The connection handshake is explicitly bounded.
 
 The fixture does **not** mock all BiglyBT APIs, test native WebRTC ICE/data
 channels, or launch the full BiglyBT application. `BiglyBTHostApiSmokeTest`
