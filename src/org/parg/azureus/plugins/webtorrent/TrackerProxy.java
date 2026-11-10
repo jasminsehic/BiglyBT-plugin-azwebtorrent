@@ -72,6 +72,8 @@ TrackerProxy
 {
 	private static final boolean TRACE = false;
     private final java.util.concurrent.atomic.AtomicLong offerBatches = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong answersReceived = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong offersReceived = new java.util.concurrent.atomic.AtomicLong();
 
     private void diagnostic(String event, String trackerUrl, String detail) {
         TrackerDiagnostics.report(plugin, "proxy", event, trackerUrl, detail);
@@ -432,6 +434,10 @@ TrackerProxy
 				                            			String sdp = (String)answer.get( "sdp" );
 				                            		
 				                            			listener.gotAnswer( hash, offer_id, sdp );
+                                                    long answered = answersReceived.incrementAndGet();
+                                                    if (answered <= 3 || answered % 100 == 0) {
+                                                        diagnostic("answer-delivered", ws_url, "count=" + answered);
+                                                    }
 				                            			
 				                            		}catch( Throwable e ){
 				                            			
@@ -461,7 +467,11 @@ TrackerProxy
 				                            			
 				                            			if ( peer_id != null ){
 				                            				
-					                            			listener.gotOffer( 
+					                            			long received = offersReceived.incrementAndGet();
+                                                    if (received <= 3 || received % 100 == 0) {
+                                                        diagnostic("offer-received", ws_url, "count=" + received);
+                                                    }
+                                                    listener.gotOffer( 
 					                            				hash, 
 					                            				offer_id, 
 					                            				sdp,
@@ -608,6 +618,8 @@ TrackerProxy
 				                	Session 	session, 
 				                	Throwable 	e )
 				                {
+                                    diagnostic("socket-error", ws_url,
+                                        "type=" + (e == null ? "unknown" : e.getClass().getSimpleName()));
 				                	 synchronized( client_sessions ){
 				                		 
 				                		 ClientSession s = client_sessions.get( ws_url );
@@ -820,6 +832,8 @@ TrackerProxy
         private long sentMessages;
         private long receivedPongs;
         private long sendFailures;
+        private long responseCount;
+        private long staleResponseCount;
     	
     	private ByteArrayHashMap<AnnounceData>	announce_map = new ByteArrayHashMap<>();
     	    	
@@ -926,6 +940,11 @@ TrackerProxy
     		byte[]		hash,
     		Map			map )
     	{
+            long count = ++responseCount;
+            if (count == 1 || count % 100 == 0) {
+                diagnostic("announce-response", ws_url,
+                    "count=" + count + " rejected=" + map.containsKey("failure reason"));
+            }
     		synchronized( this ){
     			
     			AnnounceData	ad = announce_map.get( hash );
@@ -968,10 +987,17 @@ TrackerProxy
     				announce_map.put( hash, ad );
     			}
     			
-    			if ( ad.last_announce != null && SystemTime.getMonotonousTime() - ad.last_announce_time < 10000 ){
-    				
-    				return( ad.last_announce );
-    			}
+    			if (ad.last_announce != null) {
+                    long age = SystemTime.getMonotonousTime() - ad.last_announce_time;
+                    if (age < 10000) {
+                        return ad.last_announce;
+                    }
+                    long ignored = ++staleResponseCount;
+                    if (ignored <= 3 || ignored % 100 == 0) {
+                        diagnostic("stale-response-ignored", ws_url,
+                            "count=" + ignored + " ageMs=" + age);
+                    }
+                }
     			
     			if ( ad.announce_sem == null ){
     				
