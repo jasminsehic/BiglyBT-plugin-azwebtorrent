@@ -69,6 +69,7 @@ WebTorrentTracker
 	private final TimerEventPeriodic	timer;
 	
 	private boolean		destroyed;
+    private final java.util.concurrent.atomic.AtomicLong sessionEvents = new java.util.concurrent.atomic.AtomicLong();
 	
 	protected
 	WebTorrentTracker(
@@ -213,7 +214,13 @@ WebTorrentTracker
 			}
 		}
 		
-		if ( close_it ){
+		long events = sessionEvents.incrementAndGet();
+        if (events <= 3 || events % 100 == 0) {
+            TrackerDiagnostics.report(plugin, "hosted-tracker",
+                close_it ? "session-rejected-during-shutdown" : "session-registered",
+                uri == null ? null : uri.toString(), "eventCount=" + events);
+        }
+        if ( close_it ){
 			
 			try{
 				plugin.closeSession( server, session );
@@ -240,6 +247,13 @@ WebTorrentTracker
 			
 			wrapper.destroy();
 		}
+        if (wrapper != null) {
+            long events = sessionEvents.incrementAndGet();
+            if (events <= 3 || events % 100 == 0) {
+                TrackerDiagnostics.report(plugin, "hosted-tracker", "session-removed", null,
+                    "eventCount=" + events);
+            }
+        }
 	}
 	
 	private SessionTorrent
