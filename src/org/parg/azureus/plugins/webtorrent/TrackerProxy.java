@@ -113,7 +113,9 @@ TrackerProxy
 			
 		throws Exception 
 	{
-		try{
+        // Sanitized by TrackerDiagnostics; never log the raw URL or query.
+        final String trackerLogUrl = original_url;
+        try{
 			int	q_pos = original_url.indexOf( '?' );
 			
 			final String	ws_url = original_url.substring( 0,  q_pos );
@@ -313,7 +315,8 @@ TrackerProxy
 	        		        			
 	        	if (!scrape) {
 	        		if (is_stop) {
-	        			announce_registry.remove(ws_url, info_hash);
+                    announce_registry.remove(ws_url, info_hash);
+                    diagnostic("registration-stopped", ws_url, "activeRegistrationRemoved=true");
 	        		} else {
 	        			announce_registry.register(ws_url, info_hash, announce);
 	        		}
@@ -742,9 +745,10 @@ TrackerProxy
 				
 				throw( new Exception( "WebSocket proxy offer not available" ));
 			}
-		}catch( Throwable e ){
-			
-			Map	failure = new HashMap();
+		 }catch( Throwable e ){
+            diagnostic("proxy-request-failed", trackerLogUrl,
+                "type=" + e.getClass().getSimpleName());
+            Map failure = new HashMap();
 			
 			failure.put( "failure reason", Debug.getNestedExceptionMessage( e ));
 			
