@@ -42,6 +42,26 @@ class TrackerHandshakeTest {
     }
 
     @Test
+    void handshakeUsesReadBudgetInsteadOfTenSecondCap() {
+        assertEquals(25_000, TrackerHandshake.timeoutForRead(30_000));
+        assertEquals(15_000, TrackerHandshake.timeoutForRead(20_000));
+        assertEquals(1_000, TrackerHandshake.timeoutForRead(6_000));
+        assertEquals(25_000, TrackerHandshake.timeoutForRead(Integer.MAX_VALUE));
+    }
+
+    @Test
+    void failedHandshakePreservesOriginalTlsCause() {
+        TrackerHandshake handshake = new TrackerHandshake();
+        CompletableFuture<Session> connecting = new CompletableFuture<>();
+        javax.net.ssl.SSLHandshakeException tlsFailure =
+            new javax.net.ssl.SSLHandshakeException("simulated certificate failure");
+        connecting.completeExceptionally(tlsFailure);
+        IOException failure = assertThrows(IOException.class,
+            () -> handshake.await(connecting, 1_000));
+        assertSame(tlsFailure, failure.getCause());
+    }
+
+    @Test
     void successfulHandshakeKeepsSocketOpen() throws Exception {
         TrackerHandshake handshake = new TrackerHandshake();
         AtomicBoolean closed = new AtomicBoolean();
