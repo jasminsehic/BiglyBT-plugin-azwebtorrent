@@ -58,12 +58,13 @@ The channel also retains its ordinary plugin UI log view. Entries are prefixed `
   for write limits, stale responses and failure propagation.
 - `offer-received` and `answer-delivered` for sampled signalling activity;
   the offer/answer SDP and identifying values are not logged.
-- `socket-error` for failures beyond a simple orderly close.
+- `socket-error` and `proxy-request-failed` for failures beyond an orderly close.
 - `announces-restored` with a replay count and `offersRegenerated=false`.
 - `offers-generated` for offer generation counts (first three batches and each
   hundredth batch).
-- `session-cleanup`, `proxy-shutdown`, `shutdown-start`,
-  and `shutdown-complete` for resource cleanup and waiters released.
+- `registration-stopped`, `session-cleanup`, `proxy-shutdown`,
+  `session-registered`, `session-removed`, `session-rejected-during-shutdown`,
+  `shutdown-start`, and `shutdown-complete` for registration and resource cleanup.
 
 Common sends and pong events are sampled to limit noise. No SDP bodies,
 peer IDs, torrent hashes, tracker URL query parameters, usernames or passwords
