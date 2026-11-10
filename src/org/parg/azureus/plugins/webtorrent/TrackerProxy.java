@@ -413,9 +413,11 @@ TrackerProxy
 		            
 		            ClientEndpointConfig cec = ClientEndpointConfig.Builder.create().build();
 		            
-                    TrackerHandshake handshake = new TrackerHandshake();
-                    java.util.concurrent.Future<Session> connecting =
-                        client.asyncConnectToServer(
+                    // Experimental A/B comparison against the original, blocking
+                    // connection path. Do not merge until tested on Java 8.
+                    Session session;
+                    try {
+                        session = client.connectToServer(
 		            		new Endpoint() 
 		            		{
 				                @Override
@@ -424,7 +426,6 @@ TrackerProxy
 				                	final Session 		session, 
 				                	EndpointConfig 		config) 
 				                {
-                                    if (!handshake.onOpen(session)) return;
                                     try{
 				                    	
 				                        session.addMessageHandler(PongMessage.class, new MessageHandler.Whole<PongMessage>() {
@@ -676,20 +677,17 @@ TrackerProxy
 				                	 }
 				                }
                             }, cec, new URI( ws_url ));
-                    Session session;
-                    try {
-                        session = handshake.await(connecting, handshakeTimeout);
                         diagnostic("handshake-complete", ws_url,
                             "elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(
-                                System.nanoTime() - handshakeStarted));
-                    } catch (IOException e) {
+                                System.nanoTime() - handshakeStarted)
+                                + " mode=sync");
+                    } catch (Exception e) {
                         Throwable cause = e.getCause();
-                        diagnostic(e.getMessage().contains("timed out")
-                                ? "handshake-timeout" : "handshake-error",
-                            ws_url, "timeoutMs=" + handshakeTimeout
+                        diagnostic("handshake-error", ws_url,
+                            "timeoutMs=" + handshakeTimeout
                                 + " elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(
                                     System.nanoTime() - handshakeStarted)
-                                + " cause=" + (cause == null
+                                + " mode=sync cause=" + (cause == null
                                     ? e.getClass().getSimpleName()
                                     : cause.getClass().getSimpleName()));
                         throw e;
