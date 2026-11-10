@@ -100,3 +100,42 @@ jobs:
           name: azwebtorrent-jar-${{ matrix.os }}
           path: target/azwebtorrent.jar
           if-no-files-found: error
+
+
+  compile-on-jdk21-for-java8:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Download BiglyBT 4.1.0.0 host runtime
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/BiglySoftware/BiglyBT/releases/download/v4.1.0.0/GitHub_BiglyBT.jar" \
+            --output "$RUNNER_TEMP/BiglyBT.jar"
+          test -s "$RUNNER_TEMP/BiglyBT.jar"
+      - name: Install host API in Maven cache
+        shell: bash
+        run: |
+          mvn --batch-mode --no-transfer-progress install:install-file \
+            -Dfile="$RUNNER_TEMP/BiglyBT.jar" \
+            -DgroupId=com.biglybt -DartifactId=biglybt-host \
+            -Dversion=4.1.0.0 -Dpackaging=jar -DgeneratePom=true
+      - name: Build Java 8-targeted plugin on JDK 21
+        shell: bash
+        run: |
+          # Compile test classes but don't run Java-8-specific runtime tests on JDK 21.
+          mvn --batch-mode --no-transfer-progress clean package -DskipTests
+          javap -verbose -classpath target/azwebtorrent.jar \
+            org.parg.azureus.plugins.webtorrent.TrackerProxy \
+            | grep 'major version: 52'
+      - name: Upload JDK 21 cross-compiled plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: azwebtorrent-jar-windows-jdk21-java8-target
+          path: target/azwebtorrent.jar
+          if-no-files-found: error
