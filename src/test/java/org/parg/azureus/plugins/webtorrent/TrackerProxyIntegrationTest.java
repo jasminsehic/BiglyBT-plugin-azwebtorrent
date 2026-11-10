@@ -275,6 +275,11 @@ class TrackerProxyIntegrationTest {
         assertTrue(blocked.isCancelled(), "Pending write must be cancelled");
         assertFalse(request(HASH_B, 0).contains("failure reason"),
             "Subsequent announce must not reuse the stalled socket");
+        // Reconnecting also replays the previous registration. The second reply
+        // can arrive before the replay callback finishes sending its response.
+        // Do not stop Tyrus mid-callback merely because the caller got its reply.
+        await(() -> tracker.messagesProcessed.get() >= 2);
+        tracker.assertNoAsyncFailures();
     }
 
     @Test @Timeout(30)
@@ -421,6 +426,10 @@ class TrackerProxyIntegrationTest {
             } catch (Exception | Error failure) {
                 recordFailure(session, failure);
                 throw failure;
+            } finally {
+                Object bound = session.getUserProperties().get(TRACKER_KEY);
+                if (bound instanceof MockTracker)
+                    ((MockTracker) bound).messagesProcessed.incrementAndGet();
             }
         }
     }
@@ -428,6 +437,7 @@ class TrackerProxyIntegrationTest {
     private static class MockTracker {
         final AtomicInteger connections = new AtomicInteger();
         final AtomicInteger connectionsClosed = new AtomicInteger();
+        final AtomicInteger messagesProcessed = new AtomicInteger();
         final AtomicReference<Throwable> asyncFailure = new AtomicReference<>();
         final List<JSONObject> received = new CopyOnWriteArrayList<>();
         final Set<Session> sessions = ConcurrentHashMap.newKeySet();
