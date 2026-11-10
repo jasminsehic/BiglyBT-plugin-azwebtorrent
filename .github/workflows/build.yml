@@ -48,7 +48,7 @@ jobs:
           # Some host APIs log failures from background or native initialization
           # without propagating them to JUnit. An otherwise green build must not
           # silently accept these stack traces.
-          if grep -Enm1 '(^|[[:space:]])((java|javax|jakarta)\\.[[:alnum:]_.$]*(Exception|Error):|Exception in thread|This is BAD - fix me!)' build.log; then
+          if grep -Enm1 '(^|[[:space:]])((java|javax|jakarta)\.[[:alnum:]_.$]*(Exception|Error):|Exception in thread|This is BAD - fix me!)' build.log; then
             echo "::error::Unexpected JVM exception in Maven output"
             exit 1
           fi
