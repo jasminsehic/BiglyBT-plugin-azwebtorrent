@@ -59,6 +59,11 @@
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version>
+        <configuration>
+          <!-- The BiglyBT test host installs a SecurityManager that blocks the
+               test runner from exiting; permit exit only in the test JVM. -->
+          <argLine>-Dazureus.security.manager.permitexit=1 -Dazureus.platform.manager.disable=true -Dazureus.doc.path=.</argLine>
+        </configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId><version>3.6.0</version>

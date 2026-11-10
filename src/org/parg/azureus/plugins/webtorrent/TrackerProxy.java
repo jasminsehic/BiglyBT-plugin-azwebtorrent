@@ -67,6 +67,7 @@ TrackerProxy
 	
 	private final WebTorrentPlugin		plugin;
 	private final Listener				listener;
+    private final int minimumReadTimeoutMs;
 	
 	private Map<String,ClientSession>	client_sessions = new HashMap<String, ClientSession>();
 
@@ -77,11 +78,17 @@ TrackerProxy
 	TrackerProxy(
 		WebTorrentPlugin	_plugin,
 		Listener			_listener )
-	{
-		plugin		= _plugin;
-		listener	= _listener;
-	}
-	
+    {
+        this(_plugin, _listener, 30_000);
+    }
+
+    // Test-specific shorter wait; production callers retain the default.
+    TrackerProxy(WebTorrentPlugin plugin, Listener listener, int minimumReadTimeoutMs) {
+        this.plugin = plugin;
+        this.listener = listener;
+        this.minimumReadTimeoutMs = minimumReadTimeoutMs;
+    }
+
 	@Override
 	public void 
 	handleRequest(
@@ -152,7 +159,7 @@ TrackerProxy
 
 		  	int	read_timeout	= Integer.parseInt( read_timeout_str );
 		  	
-		  	read_timeout = Math.max( read_timeout, 30*1000 );
+		  	read_timeout = Math.max( read_timeout, minimumReadTimeoutMs );
 		  	
 			boolean	is_stop = event != null && event.equals( "stopped" );
 			
@@ -550,7 +557,18 @@ TrackerProxy
 				
 				if ( reply == null ){
 					
-					throw( new Exception( "Timeout" ));
+					// A timed-out response must not leave an apparently open but unusable socket cached.
+					boolean remove;
+					synchronized( client_sessions ){
+						remove = client_sessions.get( ws_url ) == client_session;
+						if ( remove ){
+							client_sessions.remove( ws_url );
+						}
+					}
+					if ( remove ){
+						client_session.close();
+					}
+					throw( new IOException( "Tracker announce timed out" ));
 				}
 				
 				byte[] reply_bytes;
@@ -783,9 +801,12 @@ TrackerProxy
     			sem = ad.announce_sem;
     		}
     		
-    		sem.reserve( timeout );
-    		
-    		return( ad.last_announce );
+    		if ( !sem.reserve( timeout )){
+    			return( null );
+    		}
+    		synchronized( this ){
+    			return( ad.last_announce );
+    		}
     	}
     	
     	private void
