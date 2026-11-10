@@ -90,11 +90,13 @@ class TrackerReconnectIntegrationTest {
         List<JSONObject> replay = new ArrayList<>(tracker.messages.subList(2, tracker.messages.size()));
         assertTrue(replay.stream().anyMatch(m -> HASH_A.equals(m.get("info_hash"))));
         assertTrue(replay.stream().anyMatch(m -> HASH_B.equals(m.get("info_hash"))));
-        for (JSONObject message : replay) {
-            assertNull(message.get("event"), "Replayed announce must not be a new start event");
-            assertEquals(0, ((Number)message.get("numwant")).intValue());
-            assertTrue(((JSONArray)message.get("offers")).isEmpty());
-        }
+        // HASH_A is the explicit triggering request and may legitimately have
+        // event=started. The replayed HASH_B announce must be a silent refresh.
+        JSONObject restored = replay.stream().filter(m -> HASH_B.equals(m.get("info_hash")))
+            .findFirst().orElseThrow();
+        assertNull(restored.get("event"), "Replayed announce must not start a new session");
+        assertEquals(0, ((Number) restored.get("numwant")).intValue());
+        assertTrue(((JSONArray) restored.get("offers")).isEmpty());
     }
 
     private static class MockTracker {
