@@ -52,6 +52,8 @@ import dev.onvoid.webrtc.RTCDataChannelInit;
 import dev.onvoid.webrtc.RTCDataChannelObserver;
 import dev.onvoid.webrtc.RTCDataChannelState;
 import dev.onvoid.webrtc.RTCIceCandidate;
+import dev.onvoid.webrtc.RTCIceConnectionState;
+import dev.onvoid.webrtc.RTCIceGatheringState;
 import dev.onvoid.webrtc.RTCIceServer;
 import dev.onvoid.webrtc.RTCOfferOptions;
 import dev.onvoid.webrtc.RTCPeerConnection;
@@ -410,9 +412,13 @@ WebRTCLocalImpl
 		BridgePeer			bridge_peer;
 
 		void iceLog(String event, String detail) {
-			plugin.log("[soak][ice] " + event + " session=" + diagnostic_id +
-				" direction=" + (answer_listener != null ? "incoming" : "outgoing") +
-				(detail.isEmpty() ? "" : " " + detail));
+			try {
+				plugin.log("[soak][ice] " + event + " session=" + diagnostic_id +
+					" direction=" + (answer_listener != null ? "incoming" : "outgoing") +
+					(detail.isEmpty() ? "" : " " + detail));
+			} catch (RuntimeException ignored) {
+				// Diagnostics must not interrupt the native WebRTC event callback.
+			}
 		}
 
 		void iceCandidate(RTCIceCandidate candidate) {
@@ -432,10 +438,10 @@ WebRTCLocalImpl
 			}
 		}
 
-		void iceCandidateError() {
+		void iceCandidateError(RTCPeerConnectionIceErrorEvent event) {
 			ice_candidate_errors.incrementAndGet();
-			// Native callbacks do not prove which STUN/TURN packets were transmitted.
-			iceLog("candidate-error", "details=redacted");
+			// Only numeric error codes; never log the event's IP, URL or error text.
+			iceLog("candidate-error", "code=" + (event == null ? -1 : event.getErrorCode()));
 		}
 		
 		volatile boolean	pc_destroyed;
@@ -473,9 +479,21 @@ WebRTCLocalImpl
 								onIceCandidateError(
 									RTCPeerConnectionIceErrorEvent event)
 								{
-									iceCandidateError();
+									iceCandidateError(event);
 								}
 								
+								@Override
+								public void
+								onIceGatheringChange(RTCIceGatheringState state) {
+									iceLog("gathering-state", "state=" + state.name());
+								}
+
+								@Override
+								public void
+								onIceConnectionChange(RTCIceConnectionState state) {
+									iceLog("ice-connection-state", "state=" + state.name());
+								}
+
 								@Override
 								public void 
 								onConnectionChange(
@@ -601,9 +619,21 @@ WebRTCLocalImpl
 							onIceCandidateError(
 								RTCPeerConnectionIceErrorEvent event)
 							{
-								iceCandidateError();
+								iceCandidateError(event);
 							}
 							
+							@Override
+							public void
+							onIceGatheringChange(RTCIceGatheringState state) {
+								iceLog("gathering-state", "state=" + state.name());
+							}
+
+							@Override
+							public void
+							onIceConnectionChange(RTCIceConnectionState state) {
+								iceLog("ice-connection-state", "state=" + state.name());
+							}
+
 							@Override
 							public void 
 							onConnectionChange(
