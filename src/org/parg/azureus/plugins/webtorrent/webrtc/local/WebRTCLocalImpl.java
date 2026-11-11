@@ -52,6 +52,8 @@ import dev.onvoid.webrtc.RTCDataChannelInit;
 import dev.onvoid.webrtc.RTCDataChannelObserver;
 import dev.onvoid.webrtc.RTCDataChannelState;
 import dev.onvoid.webrtc.RTCIceCandidate;
+import dev.onvoid.webrtc.RTCIceConnectionState;
+import dev.onvoid.webrtc.RTCIceGatheringState;
 import dev.onvoid.webrtc.RTCIceServer;
 import dev.onvoid.webrtc.RTCOfferOptions;
 import dev.onvoid.webrtc.RTCPeerConnection;
@@ -99,6 +101,12 @@ WebRTCLocalImpl
 
 	private AtomicLong	incoming_connections	= new AtomicLong();
 	private AtomicLong	outgoing_connections	= new AtomicLong();
+	private AtomicLong	next_diagnostic_id = new AtomicLong();
+	private AtomicLong	ice_host_candidates = new AtomicLong();
+	private AtomicLong	ice_srflx_candidates = new AtomicLong();
+	private AtomicLong	ice_prflx_candidates = new AtomicLong();
+	private AtomicLong	ice_relay_candidates = new AtomicLong();
+	private AtomicLong	ice_candidate_errors = new AtomicLong();
 	
 	
 	public
@@ -195,6 +203,9 @@ WebRTCLocalImpl
 								"offers=" + offers_sent.get() + "/" + offers_received.get() + ", " +
 								"answers=" + answers_sent.get() + "/" + answers_received.get() + ", " +	
 								"timeouts=" + timeouts.get() + "/" + answers_late.get() + ", " +
+								"ice=host:" + ice_host_candidates.get() + "/srflx:" + ice_srflx_candidates.get() +
+									"/prflx:" + ice_prflx_candidates.get() + "/relay:" + ice_relay_candidates.get() +
+									"/errors:" + ice_candidate_errors.get() + ", " +
 								"data=" + DisplayFormatters.formatByteCountToKiBEtc( bytes_sent.get()) + "/" + DisplayFormatters.formatByteCountToKiBEtc( bytes_received.get()));
 						}
 					}
@@ -377,6 +388,8 @@ WebRTCLocalImpl
 	PeerConnection
 	{
 		final Object				peer_lock = new Object();
+		final long diagnostic_id = next_diagnostic_id.incrementAndGet();
+		final Set<String> candidate_types_seen = Collections.synchronizedSet(new HashSet<String>());
 		
 		final long					created_time	= SystemTime.getMonotonousTime();
 
@@ -397,6 +410,39 @@ WebRTCLocalImpl
 		volatile RTCPeerConnectionState 		connection_state;
 		
 		BridgePeer			bridge_peer;
+
+		void iceLog(String event, String detail) {
+			try {
+				plugin.log("[soak][ice] " + event + " session=" + diagnostic_id +
+					" direction=" + (answer_listener != null ? "incoming" : "outgoing") +
+					(detail.isEmpty() ? "" : " " + detail));
+			} catch (RuntimeException ignored) {
+				// Diagnostics must not interrupt the native WebRTC event callback.
+			}
+		}
+
+		void iceCandidate(RTCIceCandidate candidate) {
+			String sdp = candidate == null ? null : candidate.sdp;
+			String type = IceDiagnostics.candidateType(sdp);
+			switch (type) {
+				case "host": ice_host_candidates.incrementAndGet(); break;
+				case "srflx": ice_srflx_candidates.incrementAndGet(); break;
+				case "prflx": ice_prflx_candidates.incrementAndGet(); break;
+				case "relay": ice_relay_candidates.incrementAndGet(); break;
+				default: break;
+			}
+			// Log the first candidate of each type, never its SDP or IP address.
+			if (candidate_types_seen.add(type)) {
+				iceLog("candidate-gathered", "type=" + type +
+					" transport=" + IceDiagnostics.candidateTransport(sdp));
+			}
+		}
+
+		void iceCandidateError(RTCPeerConnectionIceErrorEvent event) {
+			ice_candidate_errors.incrementAndGet();
+			// Only numeric error codes; never log the event's IP, URL or error text.
+			iceLog("candidate-error", "code=" + (event == null ? -1 : event.getErrorCode()));
+		}
 		
 		volatile boolean	pc_destroyed;
 		
@@ -425,7 +471,7 @@ WebRTCLocalImpl
 								onIceCandidate(
 									RTCIceCandidate candidate )
 								{
-									// trace( candidate.sdp );
+									iceCandidate( candidate );
 								}
 								
 								@Override
@@ -433,9 +479,21 @@ WebRTCLocalImpl
 								onIceCandidateError(
 									RTCPeerConnectionIceErrorEvent event)
 								{
-									// trace( "candidate error: " + event.getAddress() + " - " + event.getErrorText());
+									iceCandidateError(event);
 								}
 								
+								@Override
+								public void
+								onIceGatheringChange(RTCIceGatheringState state) {
+									iceLog("gathering-state", "state=" + state.name());
+								}
+
+								@Override
+								public void
+								onIceConnectionChange(RTCIceConnectionState state) {
+									iceLog("ice-connection-state", "state=" + state.name());
+								}
+
 								@Override
 								public void 
 								onConnectionChange(
@@ -553,7 +611,7 @@ WebRTCLocalImpl
 							onIceCandidate(
 								RTCIceCandidate candidate )
 							{
-								// trace( candidate.sdp );
+								iceCandidate( candidate );
 							}
 							
 							@Override
@@ -561,9 +619,21 @@ WebRTCLocalImpl
 							onIceCandidateError(
 								RTCPeerConnectionIceErrorEvent event)
 							{
-								// trace( "candidate error: " + event.getAddress() + " - " + event.getErrorText());
+								iceCandidateError(event);
 							}
 							
+							@Override
+							public void
+							onIceGatheringChange(RTCIceGatheringState state) {
+								iceLog("gathering-state", "state=" + state.name());
+							}
+
+							@Override
+							public void
+							onIceConnectionChange(RTCIceConnectionState state) {
+								iceLog("ice-connection-state", "state=" + state.name());
+							}
+
 							@Override
 							public void 
 							onConnectionChange(
@@ -700,6 +770,9 @@ WebRTCLocalImpl
 						if ( state != RTCDataChannelState.CLOSING && state != RTCDataChannelState.CLOSED ){
 
 							trace( "channel state->" + state + ", incoming=" + ( answer_listener != null ));
+							if (state == RTCDataChannelState.OPEN) {
+								iceLog("data-channel-open", "");
+							}
 							
 							if ( state == RTCDataChannelState.OPEN ){
 								
@@ -712,6 +785,11 @@ WebRTCLocalImpl
 											RTCStatsReport report )
 										{
 											Map<String,RTCStats> stats = report.getStats();
+											Map<String,Map<String,?>> iceStats = new HashMap<>();
+											for (Map.Entry<String,RTCStats> entry : stats.entrySet()) {
+												iceStats.put(entry.getKey(), entry.getValue().getMembers());
+											}
+											iceLog("selected-path", IceDiagnostics.selectedPath(iceStats));
 											
 											String remote_ip = null;
 
@@ -803,6 +881,7 @@ WebRTCLocalImpl
 											}
 											
 											peer_bridge.addPeer( bp );
+											iceLog("bridge-peer-registered", "");
 											
 											synchronized( queue_lock ){
 												
@@ -954,6 +1033,9 @@ WebRTCLocalImpl
 			RTCPeerConnectionState state )
 		{
 			trace( "setState=" + state );
+			if (connection_state != state) {
+				iceLog("connection-state", "state=" + state.name());
+			}
 
 			boolean trigger_failed = false;
 		
@@ -987,6 +1069,7 @@ WebRTCLocalImpl
 			String		str )
 		{
 			trace( str );
+			iceLog("connection-failed", "");
 			
 			async_dispatcher.dispatch(()->{;
 
